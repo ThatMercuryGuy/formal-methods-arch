@@ -1,15 +1,14 @@
 """
-Corpus of 30 cache replacement facts and relations.
+Corpus of 19 cache replacement facts and relations.
 
 Organized into thematic groups:
-  A. Unconditional Facts (5)
-  B. LRU Stack Properties (4, includes existing R3/R4)
-  C. Policy Comparison (6)
+  A. Unconditional Facts (6)
+  B. Cache Size & Associativity Properties (4)
+  C. Policy Comparison (1)
   D. Working Set / Capacity (4)
-  E. Thrashing & Pathological (3)
-  F. Associativity Effects (2)
-  G. Belady's Anomaly / Non-Stack (2, expected_violable)
-  H. Temporal / Interval Relations (2, existing R1/R2)
+  E. Thrashing & Pathological (1)
+  F. Associativity Effects (1)
+  G. Temporal / Interval Relations (2)
 """
 
 from core import (
@@ -354,39 +353,6 @@ R7_miss_rate_monotone_in_reuse_distance = relation(
 )
 
 
-# --- R8: LRU set decomposition ---
-#
-#   HitRate[C_setassoc] ≈ HitRate[C_perset_avg] + ε
-#
-# For LRU, a set-associative cache's overall hit rate equals the average
-# of per-set hit rates (each set is an independent LRU stack). Epsilon
-# captures non-uniformity in access distribution across sets.
-
-C_setassoc = entity("C_setassoc", kind="cache")
-C_perset = entity("C_perset_avg", kind="cache")
-e8 = eps("8")
-
-R8_lru_set_decomposition = relation(
-    name="lru_set_decomposition",
-    premises=[
-        constraint(
-            metric(M.STACK_DEPTH, C_setassoc),
-            CmpOp.EQ,
-            metric(M.ASSOCIATIVITY, C_setassoc)
-        )
-    ],
-    consequent=constraint(
-        metric(M.HIT_RATE, C_setassoc),
-        CmpOp.GE,
-        sub(metric(M.HIT_RATE, C_perset), e8)
-    ),
-    entities=[C_setassoc, C_perset, p_lru],
-    bindings=[(C_setassoc, p_lru), (C_perset, p_lru)],
-    free_epsilons=[e8],
-    source="Mattson et al. decomposition",
-    domain="LRU, uniform set indexing (no skewed/randomized)",
-)
-
 
 # =============================================================================
 # GROUP C: POLICY COMPARISON (6)
@@ -425,214 +391,6 @@ R9_opt_upper_bounds_all_policies = relation(
     domain="same cache geometry, same workload, demand-fetch only",
 )
 
-
-# --- R10: Recency-aware beats recency-blind under temporal locality ---
-#
-#   ReuseDistance[W] <= Size[C] / (2 * 64) ∧ same geometry
-#     => HitRate[C_recency_aware] >= HitRate[C_recency_blind] + ε
-#
-# When reuse distances are well within cache capacity, policies that
-# track/exploit recency outperform those that don't.
-
-C_aware_r10 = entity("C_recency_aware", kind="cache")
-C_blind_r10 = entity("C_recency_blind", kind="cache")
-W_r10 = entity("W", kind="workload")
-p_aware = entity("P_recency_aware", kind="policy")
-p_blind = entity("P_recency_blind", kind="policy")
-e10 = eps("10")
-
-R10_recency_aware_beats_blind = relation(
-    name="recency_aware_beats_blind_temporal_locality",
-    premises=[
-        conj(
-            constraint(
-                metric(M.REUSE_DISTANCE, W_r10),
-                CmpOp.LE,
-                div(metric(M.SIZE, C_aware_r10), mul(lit(2), BLOCK_SIZE))
-            ),
-            constraint(metric(M.SIZE, C_aware_r10), CmpOp.EQ,
-                       metric(M.SIZE, C_blind_r10)),
-            constraint(metric(M.ASSOCIATIVITY, C_aware_r10), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_blind_r10)),
-        )
-    ],
-    consequent=constraint(
-        metric(M.HIT_RATE, C_aware_r10),
-        CmpOp.GE,
-        add(metric(M.HIT_RATE, C_blind_r10), e10)
-    ),
-    entities=[C_aware_r10, C_blind_r10, W_r10, p_aware, p_blind],
-    bindings=[(C_aware_r10, p_aware), (C_blind_r10, p_blind)],
-    free_epsilons=[e10],
-    source="recency-exploiting policies dominate when temporal locality is strong",
-    domain="same geometry, strong temporal locality workloads",
-)
-
-
-# --- R11: Random replacement lower bound relative to any policy ---
-#
-#   HitRate[C_rand] >= (1 - 1/Assoc) * HitRate[C_P] - ε
-#
-# Random replacement retains useful blocks with probability (ways-1)/ways
-# per eviction, giving a probabilistic lower bound relative to any reference.
-
-C_ref_r11 = entity("C_ref", kind="cache")
-C_rand_r11 = entity("C_rand", kind="cache")
-p_ref_r11 = entity("P_ref", kind="policy")
-e11 = eps("11")
-
-R11_random_replacement_lower_bound = relation(
-    name="random_replacement_lower_bound",
-    premises=[
-        conj(
-            constraint(metric(M.SIZE, C_ref_r11), CmpOp.EQ, metric(M.SIZE, C_rand_r11)),
-            constraint(metric(M.ASSOCIATIVITY, C_ref_r11), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_rand_r11)),
-        )
-    ],
-    consequent=constraint(
-        metric(M.HIT_RATE, C_rand_r11),
-        CmpOp.GE,
-        sub(
-            mul(
-                sub(lit(1), div(lit(1), metric(M.ASSOCIATIVITY, C_ref_r11))),
-                metric(M.HIT_RATE, C_ref_r11)
-            ),
-            e11
-        )
-    ),
-    entities=[C_ref_r11, C_rand_r11, p_ref_r11, p_random],
-    bindings=[(C_ref_r11, p_ref_r11), (C_rand_r11, p_random)],
-    free_epsilons=[e11],
-    source="Al-Zoubi et al.; probabilistic argument",
-    domain="same cache geometry, same workload, any reference policy",
-)
-
-
-# --- R12: Adaptive policy tracks the best static component ---
-#
-#   HitRate[C_adaptive] >= HitRate[C_best_static] - ε
-#
-# Adaptive policies (DIP/DRRIP) use set-dueling to dynamically select
-# the better sub-policy. They achieve within epsilon of the best static
-# choice, where epsilon is the set-dueling overhead.
-
-C_adapt_r12 = entity("C_adaptive", kind="cache")
-C_best_r12 = entity("C_best_static", kind="cache")
-C_other_r12 = entity("C_other_static", kind="cache")
-p_best_r12 = entity("P_best", kind="policy")
-p_other_r12 = entity("P_other", kind="policy")
-e_adapt = eps("adapt")
-
-R12_adaptive_tracks_best_component = relation(
-    name="adaptive_tracks_best_component",
-    premises=[
-        conj(
-            constraint(metric(M.SIZE, C_adapt_r12), CmpOp.EQ, metric(M.SIZE, C_best_r12)),
-            constraint(metric(M.SIZE, C_best_r12), CmpOp.EQ, metric(M.SIZE, C_other_r12)),
-            constraint(metric(M.ASSOCIATIVITY, C_adapt_r12), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_best_r12)),
-            constraint(metric(M.HIT_RATE, C_best_r12), CmpOp.GE,
-                       metric(M.HIT_RATE, C_other_r12)),
-        )
-    ],
-    consequent=constraint(
-        metric(M.HIT_RATE, C_adapt_r12),
-        CmpOp.GE,
-        sub(metric(M.HIT_RATE, C_best_r12), e_adapt)
-    ),
-    entities=[C_adapt_r12, C_best_r12, C_other_r12, p_adaptive, p_best_r12, p_other_r12],
-    bindings=[(C_adapt_r12, p_adaptive), (C_best_r12, p_best_r12),
-              (C_other_r12, p_other_r12)],
-    free_epsilons=[e_adapt],
-    source="Qureshi et al. ISCA 2007 (DIP); Jaleel et al. ISCA 2010 (RRIP)",
-    domain="same cache geometry, single workload, set-dueling adaptive policy",
-)
-
-
-# --- R13: Hardware approximation tracks ideal policy ---
-#
-#   HitRate[C_approx] >= HitRate[C_ideal] - ε
-#
-# Any hardware-feasible approximation of an ideal policy stays within
-# epsilon of it. Applies to PLRU/LRU, quantized-Mockingjay/full, etc.
-
-C_ideal_r13 = entity("C_ideal", kind="cache")
-C_approx_r13 = entity("C_approx", kind="cache")
-p_ideal = entity("P_ideal", kind="policy")
-p_approx = entity("P_approx", kind="policy")
-e13 = eps("13")
-
-R13_approximation_tracks_ideal = relation(
-    name="hw_approximation_tracks_ideal",
-    premises=[
-        conj(
-            constraint(metric(M.SIZE, C_ideal_r13), CmpOp.EQ,
-                       metric(M.SIZE, C_approx_r13)),
-            constraint(metric(M.ASSOCIATIVITY, C_ideal_r13), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_approx_r13)),
-        )
-    ],
-    consequent=constraint(
-        metric(M.HIT_RATE, C_approx_r13),
-        CmpOp.GE,
-        sub(metric(M.HIT_RATE, C_ideal_r13), e13)
-    ),
-    entities=[C_ideal_r13, C_approx_r13, p_ideal, p_approx],
-    bindings=[(C_ideal_r13, p_ideal), (C_approx_r13, p_approx)],
-    free_epsilons=[e13],
-    source="general; e.g. Al-Zoubi et al. 2004 (PLRU/LRU)",
-    domain="same geometry, same workload, P_approx is a hw-feasible version of P_ideal",
-)
-
-
-# --- R14: Approximation gap grows with decision space ---
-#
-#   Assoc[high] > Assoc[low] ∧ same size
-#     => (HR_ideal - HR_approx)[high] >= (HR_ideal - HR_approx)[low] - ε
-#
-# More candidates to rank makes approximation harder. The gap between
-# an ideal policy and its hardware approximation widens with associativity.
-
-C_ideal_hi = entity("C_ideal_hiassoc", kind="cache")
-C_approx_hi = entity("C_approx_hiassoc", kind="cache")
-C_ideal_lo = entity("C_ideal_loassoc", kind="cache")
-C_approx_lo = entity("C_approx_loassoc", kind="cache")
-p_ideal_r14 = entity("P_ideal", kind="policy")
-p_approx_r14 = entity("P_approx", kind="policy")
-e14 = eps("14")
-
-R14_approximation_gap_grows_with_associativity = relation(
-    name="approximation_gap_grows_with_associativity",
-    premises=[
-        conj(
-            constraint(metric(M.ASSOCIATIVITY, C_ideal_hi), CmpOp.GT,
-                       metric(M.ASSOCIATIVITY, C_ideal_lo)),
-            constraint(metric(M.SIZE, C_ideal_hi), CmpOp.EQ, metric(M.SIZE, C_ideal_lo)),
-            constraint(metric(M.SIZE, C_ideal_hi), CmpOp.EQ, metric(M.SIZE, C_approx_hi)),
-            constraint(metric(M.SIZE, C_ideal_lo), CmpOp.EQ, metric(M.SIZE, C_approx_lo)),
-            constraint(metric(M.ASSOCIATIVITY, C_ideal_hi), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_approx_hi)),
-            constraint(metric(M.ASSOCIATIVITY, C_ideal_lo), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_approx_lo)),
-        )
-    ],
-    consequent=constraint(
-        sub(metric(M.HIT_RATE, C_ideal_hi), metric(M.HIT_RATE, C_approx_hi)),
-        CmpOp.GE,
-        sub(
-            sub(metric(M.HIT_RATE, C_ideal_lo), metric(M.HIT_RATE, C_approx_lo)),
-            e14
-        )
-    ),
-    entities=[C_ideal_hi, C_approx_hi, C_ideal_lo, C_approx_lo,
-              p_ideal_r14, p_approx_r14],
-    bindings=[(C_ideal_hi, p_ideal_r14), (C_approx_hi, p_approx_r14),
-              (C_ideal_lo, p_ideal_r14), (C_approx_lo, p_approx_r14)],
-    free_epsilons=[e14],
-    source="larger decision space makes approximation harder",
-    domain="same total size, same workload, P_approx is hw-feasible version of P_ideal",
-)
 
 
 # =============================================================================
@@ -820,74 +578,6 @@ R19_lru_thrashing_cyclic = relation(
 )
 
 
-# --- R20: BIP mitigates thrashing ---
-#
-#   Same thrashing workload ∧ ADAPTIVE => HitRate[C] >= ε
-#
-# Bimodal insertion policy (BIP) inserts at LRU position with high
-# probability, preventing the cascade eviction that causes thrashing.
-# Under the same cyclic workload that kills LRU, BIP achieves
-# significantly positive hit rate.
-
-C_r20 = entity("C", kind="cache")
-W_r20 = entity("W_cyclic", kind="workload")
-e20 = eps("20")
-
-R20_bip_mitigates_thrashing = relation(
-    name="bip_mitigates_thrashing",
-    premises=[
-        constraint(
-            metric(M.UNIQUE_BLOCKS, W_r20),
-            CmpOp.EQ,
-            add(div(metric(M.SIZE, C_r20), BLOCK_SIZE), lit(1))
-        )
-    ],
-    consequent=constraint(
-        metric(M.HIT_RATE, C_r20),
-        CmpOp.GE,
-        e20
-    ),
-    entities=[C_r20, W_r20, p_adaptive],
-    bindings=[(C_r20, p_adaptive)],
-    free_epsilons=[e20],
-    source="Qureshi et al. ISCA 2007 (DIP/BIP)",
-    domain="cyclic thrashing workload, BIP or DIP adaptive policy",
-)
-
-
-# --- R21: Random replacement avoids deterministic thrashing ---
-#
-#   RANDOM ∧ cyclic => HitRate[C] >= 1/Assoc - ε
-#
-# Random replacement never hits 0% because it retains useful blocks
-# with nonzero probability. The expected hit rate has a floor related
-# to the survival probability per eviction.
-
-C_r21 = entity("C", kind="cache")
-W_r21 = entity("W_cyclic", kind="workload")
-e21 = eps("21")
-
-R21_random_avoids_deterministic_thrashing = relation(
-    name="random_avoids_deterministic_thrashing",
-    premises=[
-        constraint(
-            metric(M.UNIQUE_BLOCKS, W_r21),
-            CmpOp.EQ,
-            add(div(metric(M.SIZE, C_r21), BLOCK_SIZE), lit(1))
-        )
-    ],
-    consequent=constraint(
-        metric(M.HIT_RATE, C_r21),
-        CmpOp.GE,
-        sub(div(lit(1), metric(M.ASSOCIATIVITY, C_r21)), e21)
-    ),
-    entities=[C_r21, W_r21, p_random],
-    bindings=[(C_r21, p_random)],
-    free_epsilons=[e21],
-    source="probabilistic argument; survival probability (ways-1)/ways",
-    domain="cyclic/repeating workload, random replacement",
-)
-
 
 # =============================================================================
 # GROUP F: ASSOCIATIVITY EFFECTS (2)
@@ -925,130 +615,10 @@ R22_conflict_misses_decrease_with_associativity = relation(
 )
 
 
-# --- R23: Scan-aware policy beats scan-naive on mixed workloads ---
-#
-#   Scanning component has high reuse distance ∧ recurrent component
-#   fits in cache ∧ scan-aware vs scan-naive => HR[aware] >= HR[naive] + ε
-#
-# Scan-naive policies pollute the cache with streaming data; scan-aware
-# policies (RRIP, ARC, LIRS, Mockingjay) protect the recurrent working set.
-
-C_naive_r23 = entity("C_scan_naive", kind="cache")
-C_aware_r23 = entity("C_scan_aware", kind="cache")
-W_scan = entity("W_scan_component", kind="workload")
-W_recur = entity("W_recurrent", kind="workload")
-p_naive = entity("P_scan_naive", kind="policy")
-p_scan_aware = entity("P_scan_aware", kind="policy")
-e23 = eps("23")
-
-R23_scan_resistance = relation(
-    name="scan_aware_beats_scan_naive",
-    premises=[
-        conj(
-            constraint(metric(M.SIZE, C_naive_r23), CmpOp.EQ,
-                       metric(M.SIZE, C_aware_r23)),
-            constraint(metric(M.ASSOCIATIVITY, C_naive_r23), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_aware_r23)),
-            constraint(
-                metric(M.REUSE_DISTANCE, W_scan),
-                CmpOp.GT,
-                div(metric(M.SIZE, C_naive_r23), BLOCK_SIZE)
-            ),
-            constraint(
-                metric(M.WORKING_SET_SIZE, W_recur),
-                CmpOp.LT,
-                div(metric(M.SIZE, C_naive_r23), BLOCK_SIZE)
-            ),
-        )
-    ],
-    consequent=constraint(
-        metric(M.HIT_RATE, C_aware_r23),
-        CmpOp.GE,
-        add(metric(M.HIT_RATE, C_naive_r23), e23)
-    ),
-    entities=[C_naive_r23, C_aware_r23, W_scan, W_recur, p_naive, p_scan_aware],
-    bindings=[(C_naive_r23, p_naive), (C_aware_r23, p_scan_aware)],
-    free_epsilons=[e23],
-    source="Megiddo & Modha 2003 (ARC); Jiang & Zhang 2002 (LIRS)",
-    domain="mixed scan+recurrent workload",
-)
-
 
 # =============================================================================
 # GROUP G: BELADY'S ANOMALY / NON-STACK (2)
 # =============================================================================
-
-# --- R24: Belady's anomaly for FIFO ---
-#
-#   FIFO ∧ Size[large] > Size[small]
-#     => MissRate[large] <= MissRate[small] + ε
-#
-# For FIFO, increasing cache size can INCREASE the miss rate.
-# We state the "expected" monotonicity and mark it expected_violable.
-# A negative epsilon IS the anomaly manifesting.
-
-C_large_r24 = entity("C_large", kind="cache")
-C_small_r24 = entity("C_small", kind="cache")
-e24 = eps("24")
-
-R24_beladys_anomaly_fifo = relation(
-    name="beladys_anomaly_fifo",
-    premises=[
-        conj(
-            constraint(metric(M.SIZE, C_large_r24), CmpOp.GT,
-                       metric(M.SIZE, C_small_r24)),
-            constraint(metric(M.ASSOCIATIVITY, C_large_r24), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_small_r24)),
-        )
-    ],
-    consequent=constraint(
-        metric(M.MISS_RATE, C_large_r24),
-        CmpOp.LE,
-        add(metric(M.MISS_RATE, C_small_r24), e24)
-    ),
-    entities=[C_large_r24, C_small_r24, p_fifo],
-    bindings=[(C_large_r24, p_fifo), (C_small_r24, p_fifo)],
-    free_epsilons=[e24],
-    source="Belady et al. 1969",
-    domain="FIFO policy specifically",
-    expected_violable=True,
-)
-
-
-# --- R25: Non-stack non-monotone associativity ---
-#
-#   FIFO ∧ Assoc[high] > Assoc[low] ∧ same size
-#     => HitRate[high] >= HitRate[low] - ε
-#
-# For non-stack policies, increasing associativity while keeping size
-# fixed does NOT guarantee a hit rate increase. Negative epsilon means
-# violation.
-
-C_hi_r25 = entity("C_hiassoc", kind="cache")
-C_lo_r25 = entity("C_loassoc", kind="cache")
-e25 = eps("25")
-
-R25_non_stack_non_monotone_associativity = relation(
-    name="non_stack_non_monotone_associativity",
-    premises=[
-        conj(
-            constraint(metric(M.ASSOCIATIVITY, C_hi_r25), CmpOp.GT,
-                       metric(M.ASSOCIATIVITY, C_lo_r25)),
-            constraint(metric(M.SIZE, C_hi_r25), CmpOp.EQ, metric(M.SIZE, C_lo_r25)),
-        )
-    ],
-    consequent=constraint(
-        metric(M.HIT_RATE, C_hi_r25),
-        CmpOp.GE,
-        sub(metric(M.HIT_RATE, C_lo_r25), e25)
-    ),
-    entities=[C_hi_r25, C_lo_r25, p_fifo],
-    bindings=[(C_hi_r25, p_fifo), (C_lo_r25, p_fifo)],
-    free_epsilons=[e25],
-    source="consequence of Belady's anomaly in associativity dimension",
-    domain="FIFO or non-stack policy",
-    expected_violable=True,
-)
 
 
 # =============================================================================
@@ -1112,19 +682,13 @@ ALL_RELATIONS = [
     F3_replacement_affects_only_capacity_conflict,
     F4_full_associativity_zero_conflict_misses,
     F5_stack_policy_inclusion,
-    # Group B: LRU Stack Properties
+    # Group B: Cache Size & Associativity Properties
     R3_larger_cache_higher_hr,
     R4_diminishing_assoc_returns,
     R6_working_set_fits_means_all_hits,
     R7_miss_rate_monotone_in_reuse_distance,
-    R8_lru_set_decomposition,
     # Group C: Policy Comparison
     R9_opt_upper_bounds_all_policies,
-    R10_recency_aware_beats_blind,
-    R11_random_replacement_lower_bound,
-    R12_adaptive_tracks_best_component,
-    R13_approximation_tracks_ideal,
-    R14_approximation_gap_grows_with_associativity,
     # Group D: Working Set / Capacity
     R15_cliff_at_working_set_boundary,
     R16_capacity_misses_dominate_beyond_wss,
@@ -1132,20 +696,14 @@ ALL_RELATIONS = [
     R18_locality_decay_increases_misses,
     # Group E: Thrashing & Pathological
     R19_lru_thrashing_cyclic,
-    R20_bip_mitigates_thrashing,
-    R21_random_avoids_deterministic_thrashing,
     # Group F: Associativity Effects
     R22_conflict_misses_decrease_with_associativity,
-    R23_scan_resistance,
-    # Group G: Belady's Anomaly / Non-Stack
-    R24_beladys_anomaly_fifo,
-    R25_non_stack_non_monotone_associativity,
-    # Group H: Temporal / Interval
+    # Group G: Temporal / Interval
     R1_hit_rate_implies_fewer_stalls,
     R2_critical_hit_rate_implies_fewer_stalls,
 ]
 
-assert len(ALL_RELATIONS) == 30, f"Expected 30, got {len(ALL_RELATIONS)}"
+assert len(ALL_RELATIONS) == 19, f"Expected 19, got {len(ALL_RELATIONS)}"
 
 
 if __name__ == "__main__":

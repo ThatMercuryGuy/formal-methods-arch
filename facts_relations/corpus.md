@@ -78,14 +78,6 @@ $$\text{ReuseDistance}[W_a] \leq \text{ReuseDistance}[W_b] \implies \text{MissRa
 
 Domain: any policy $P$, same cache geometry.
 
-**R8.** LRU Set Decomposition
-
-Under LRU, each set operates as an independent stack, so the overall hit rate is approximately the average of per-set hit rates.
-
-$$\text{StackDepth}[C] = \text{Assoc}[C] \implies \text{HitRate}[C_{\text{set-assoc}}] \geq \text{HitRate}[C_{\text{per-set avg}}] - \varepsilon_8$$
-
-Domain: LRU only, uniform set indexing.
-
 ---
 
 ## Policy Comparison
@@ -98,51 +90,6 @@ $$\text{Size}[C_{\text{opt}}] = \text{Size}[C_{\text{any}}] \;\wedge\; \text{Ass
 $$\implies \text{HitRate}[C_{\text{opt}}] \geq \text{HitRate}[C_{\text{any}}] - \varepsilon_9$$
 
 Domain: demand-fetch only, same geometry and workload.
-
-**R10.** Recency-Aware Beats Recency-Blind Under Temporal Locality
-
-When reuse distances are well within cache capacity, policies that track recency outperform those that don't.
-
-$$\text{ReuseDistance}[W] \leq \frac{\text{Size}[C]}{2B} \;\wedge\; \text{same geometry}$$
-$$\implies \text{HitRate}[C_{\text{recency-aware}}] \geq \text{HitRate}[C_{\text{recency-blind}}] + \varepsilon_{10}$$
-
-Domain: any recency-aware policy (LRU, RRIP, Mockingjay) vs any recency-blind policy (FIFO, random).
-
-**R11.** Random Replacement Lower Bound
-
-Random eviction retains any given useful block with probability (ways-1)/ways per replacement event, establishing a probabilistic floor on hit rate relative to any reference policy.
-
-$$\text{Size}[C_P] = \text{Size}[C_{\text{rand}}] \;\wedge\; \text{Assoc}[C_P] = \text{Assoc}[C_{\text{rand}}]$$
-$$\implies \text{HitRate}[C_{\text{rand}}] \geq \left(1 - \frac{1}{\text{Assoc}[C]}\right) \cdot \text{HitRate}[C_P] - \varepsilon_{11}$$
-
-Domain: any reference policy $P$, same geometry, same workload.
-
-**R12.** Adaptive Tracks Best Component
-
-A set-dueling adaptive policy dynamically identifies which of its constituent sub-policies is performing better and converges to within epsilon of that best choice.
-
-$$\text{HitRate}[C_{\text{best static}}] \geq \text{HitRate}[C_{\text{other static}}] \;\wedge\; \text{same geometry}$$
-$$\implies \text{HitRate}[C_{\text{adaptive}}] \geq \text{HitRate}[C_{\text{best static}}] - \varepsilon_{\text{adapt}}$$
-
-Domain: set-dueling adaptive policy (DIP, DRRIP).
-
-**R13.** Hardware Approximation Tracks Ideal
-
-Any hardware-feasible approximation of an ideal policy stays within epsilon of it (e.g., PLRU/LRU, quantized-Mockingjay/full-precision, distilled/teacher).
-
-$$\text{Size}[C_{\text{ideal}}] = \text{Size}[C_{\text{approx}}] \;\wedge\; \text{Assoc}[C_{\text{ideal}}] = \text{Assoc}[C_{\text{approx}}]$$
-$$\implies \text{HitRate}[C_{\text{approx}}] \geq \text{HitRate}[C_{\text{ideal}}] - \varepsilon_{13}$$
-
-Domain: same geometry, same workload, $P_{\text{approx}}$ is a hw-feasible version of $P_{\text{ideal}}$.
-
-**R14.** Approximation Gap Grows With Decision Space
-
-More candidates to rank (higher associativity) makes approximation harder, widening the gap between an ideal policy and its hardware-constrained version.
-
-$$\text{Assoc}[C_{\text{hi}}] > \text{Assoc}[C_{\text{lo}}] \;\wedge\; \text{same size}$$
-$$\implies \bigl(\text{HitRate}[C_{\text{ideal,hi}}] - \text{HitRate}[C_{\text{approx,hi}}]\bigr) \geq \bigl(\text{HitRate}[C_{\text{ideal,lo}}] - \text{HitRate}[C_{\text{approx,lo}}]\bigr) - \varepsilon_{14}$$
-
-Domain: same total size, same workload, $P_{\text{approx}}$ is hw-feasible version of $P_{\text{ideal}}$.
 
 ---
 
@@ -193,22 +140,6 @@ $$\text{UniqueBlocks}[W] = \frac{\text{Size}[C]}{B} + 1 \implies \text{HitRate}[
 
 Domain: LRU, purely cyclic access pattern. $\varepsilon_{19} \approx 0$.
 
-**R20.** BIP/Adaptive Mitigates Thrashing
-
-Under the same cyclic pattern that kills LRU, an adaptive insertion policy avoids the cascade eviction and maintains a significantly positive hit rate.
-
-$$\text{UniqueBlocks}[W] = \frac{\text{Size}[C]}{B} + 1 \implies \text{HitRate}[C] \geq \varepsilon_{20}$$
-
-Domain: Adaptive policy (BIP, DIP). $\varepsilon_{20} \gg 0$.
-
-**R21.** Random Avoids Deterministic Thrashing
-
-Random eviction can never be forced into zero hits because it always has a nonzero probability of keeping the right block, giving a floor proportional to 1/associativity.
-
-$$\text{UniqueBlocks}[W] = \frac{\text{Size}[C]}{B} + 1 \implies \text{HitRate}[C] \geq \frac{1}{\text{Assoc}[C]} - \varepsilon_{21}$$
-
-Domain: Random replacement, cyclic workload.
-
 ---
 
 ## Associativity Effects
@@ -221,37 +152,6 @@ $$\text{Assoc}[C_{\text{hi}}] \geq \text{Assoc}[C_{\text{lo}}] \;\wedge\; \text{
 $$\implies \text{ConflictMisses}[C_{\text{hi}}] \leq \text{ConflictMisses}[C_{\text{lo}}] + \varepsilon_{22}$$
 
 Domain: any policy (same for both), same workload.
-
-**R23.** Scan-Aware Beats Scan-Naive on Mixed Workloads
-
-When a workload mixes a streaming scan (large reuse distance) with a recurrent working set that fits in cache, policies that detect and deprioritize scan traffic protect the useful data that scan-naive policies would evict.
-
-$$\text{ReuseDistance}[W_{\text{scan}}] > \frac{\text{Size}[C]}{B} \;\wedge\; \text{WSS}[W_{\text{recur}}] < \frac{\text{Size}[C]}{B} \;\wedge\; \text{same geometry}$$
-$$\implies \text{HitRate}[C_{\text{scan-aware}}] \geq \text{HitRate}[C_{\text{scan-naive}}] + \varepsilon_{23}$$
-
-Domain: any scan-aware policy (RRIP, ARC, LIRS, Mockingjay) vs any scan-naive policy (LRU, FIFO).
-
----
-
-## Belady's Anomaly / Non-Stack
-
-**R24.** Belady's Anomaly (FIFO) — `expected_violable`
-
-FIFO can exhibit the counterintuitive behavior where a larger cache produces more misses than a smaller one on certain access patterns.
-
-$$\text{Size}[C_{\text{large}}] > \text{Size}[C_{\text{small}}] \;\wedge\; \text{Assoc equal}$$
-$$\implies \text{MissRate}[C_{\text{large}}] \leq \text{MissRate}[C_{\text{small}}] + \varepsilon_{24}$$
-
-Domain: FIFO. Negative $\varepsilon_{24}$ = anomaly manifesting.
-
-**R25.** Non-Stack Non-Monotone Associativity — `expected_violable`
-
-For non-stack policies, increasing associativity at fixed total size does not guarantee improvement — the analog of Belady's anomaly in the associativity dimension.
-
-$$\text{Assoc}[C_{\text{hi}}] > \text{Assoc}[C_{\text{lo}}] \;\wedge\; \text{Size equal}$$
-$$\implies \text{HitRate}[C_{\text{hi}}] \geq \text{HitRate}[C_{\text{lo}}] - \varepsilon_{25}$$
-
-Domain: FIFO / non-stack. Negative $\varepsilon_{25}$ = violation.
 
 ---
 
