@@ -43,7 +43,7 @@ Domain: LRU or any stack algorithm. Same workload, same associativity.
 
 ---
 
-## LRU Stack Properties
+## Cache Size & Associativity Properties
 
 **R3.** Larger Cache → Higher Hit Rate
 
@@ -51,7 +51,7 @@ More capacity means more of the working set can stay resident, so hit rate shoul
 
 $$\text{Size}[C_a] \geq \text{Size}[C_b] \implies \text{HitRate}[C_a] \geq \text{HitRate}[C_b] + \varepsilon_3$$
 
-Domain: LRU, same workload and associativity.
+Domain: any policy $P$, same workload and associativity.
 
 **R4.** Diminishing Returns of Associativity
 
@@ -60,7 +60,7 @@ Doubling the number of ways helps, but each successive doubling helps less — t
 $$\text{Size}[C_a] = \text{Size}[C_b] = \text{Size}[C_c], \quad 2\,\text{Assoc}[C_a] = \text{Assoc}[C_b], \quad 2\,\text{Assoc}[C_b] = \text{Assoc}[C_c]$$
 $$\implies \bigl(\text{HitRate}[C_c] - \text{HitRate}[C_b]\bigr) \leq \bigl(\text{HitRate}[C_b] - \text{HitRate}[C_a]\bigr) + \varepsilon_{12}$$
 
-Domain: LRU, fixed size, single workload.
+Domain: any policy $P$, fixed size, single workload.
 
 **R6.** Working Set Fits → All Hits
 
@@ -68,7 +68,7 @@ If the entire working set fits in the cache, every block eventually becomes resi
 
 $$\text{WSS}[W] \leq \frac{\text{Size}[C]}{B} \implies \text{HitRate}[C] \geq 1 - \varepsilon_6$$
 
-Domain: LRU, fully-associative or high-assoc, after warmup.
+Domain: any demand-fetch policy, fully-associative or high-assoc, after warmup.
 
 **R7.** Miss Rate Monotone in Reuse Distance
 
@@ -76,7 +76,7 @@ A workload with shorter average reuse distances has more of its accesses falling
 
 $$\text{ReuseDistance}[W_a] \leq \text{ReuseDistance}[W_b] \implies \text{MissRate}[C_{W_a}] \leq \text{MissRate}[C_{W_b}] + \varepsilon_7$$
 
-Domain: LRU, same cache geometry.
+Domain: any policy $P$, same cache geometry.
 
 **R8.** LRU Set Decomposition
 
@@ -84,7 +84,7 @@ Under LRU, each set operates as an independent stack, so the overall hit rate is
 
 $$\text{StackDepth}[C] = \text{Assoc}[C] \implies \text{HitRate}[C_{\text{set-assoc}}] \geq \text{HitRate}[C_{\text{per-set avg}}] - \varepsilon_8$$
 
-Domain: LRU, uniform set indexing.
+Domain: LRU only, uniform set indexing.
 
 ---
 
@@ -99,19 +99,23 @@ $$\implies \text{HitRate}[C_{\text{opt}}] \geq \text{HitRate}[C_{\text{any}}] - 
 
 Domain: demand-fetch only, same geometry and workload.
 
-**R10.** LRU Beats FIFO Under Temporal Locality
+**R10.** Recency-Aware Beats Recency-Blind Under Temporal Locality
 
-When reuse distances are well within cache capacity, LRU's ability to keep recently-used blocks wins over FIFO's blind age-based rotation.
+When reuse distances are well within cache capacity, policies that track recency outperform those that don't.
 
-$$\text{ReuseDistance}[W] \leq \frac{\text{Size}[C]}{2B} \;\wedge\; \text{Size}[C_{\text{lru}}] = \text{Size}[C_{\text{fifo}}] \;\wedge\; \text{Assoc}[C_{\text{lru}}] = \text{Assoc}[C_{\text{fifo}}]$$
-$$\implies \text{HitRate}[C_{\text{lru}}] \geq \text{HitRate}[C_{\text{fifo}}] + \varepsilon_{10}$$
+$$\text{ReuseDistance}[W] \leq \frac{\text{Size}[C]}{2B} \;\wedge\; \text{same geometry}$$
+$$\implies \text{HitRate}[C_{\text{recency-aware}}] \geq \text{HitRate}[C_{\text{recency-blind}}] + \varepsilon_{10}$$
+
+Domain: any recency-aware policy (LRU, RRIP, Mockingjay) vs any recency-blind policy (FIFO, random).
 
 **R11.** Random Replacement Lower Bound
 
-Random eviction retains any given useful block with probability (ways-1)/ways per replacement event, establishing a probabilistic floor on hit rate relative to LRU.
+Random eviction retains any given useful block with probability (ways-1)/ways per replacement event, establishing a probabilistic floor on hit rate relative to any reference policy.
 
-$$\text{Size}[C_{\text{lru}}] = \text{Size}[C_{\text{rand}}] \;\wedge\; \text{Assoc}[C_{\text{lru}}] = \text{Assoc}[C_{\text{rand}}]$$
-$$\implies \text{HitRate}[C_{\text{rand}}] \geq \left(1 - \frac{1}{\text{Assoc}[C]}\right) \cdot \text{HitRate}[C_{\text{lru}}] - \varepsilon_{11}$$
+$$\text{Size}[C_P] = \text{Size}[C_{\text{rand}}] \;\wedge\; \text{Assoc}[C_P] = \text{Assoc}[C_{\text{rand}}]$$
+$$\implies \text{HitRate}[C_{\text{rand}}] \geq \left(1 - \frac{1}{\text{Assoc}[C]}\right) \cdot \text{HitRate}[C_P] - \varepsilon_{11}$$
+
+Domain: any reference policy $P$, same geometry, same workload.
 
 **R12.** Adaptive Tracks Best Component
 
@@ -122,19 +126,23 @@ $$\implies \text{HitRate}[C_{\text{adaptive}}] \geq \text{HitRate}[C_{\text{best
 
 Domain: set-dueling adaptive policy (DIP, DRRIP).
 
-**R13.** PLRU Approximates LRU
+**R13.** Hardware Approximation Tracks Ideal
 
-Tree-based pseudo-LRU is a hardware-cheap approximation that tracks a coarser recency ordering; its hit rate stays close to true LRU.
+Any hardware-feasible approximation of an ideal policy stays within epsilon of it (e.g., PLRU/LRU, quantized-Mockingjay/full-precision, distilled/teacher).
 
-$$\text{Size}[C_{\text{lru}}] = \text{Size}[C_{\text{plru}}] \;\wedge\; \text{Assoc}[C_{\text{lru}}] = \text{Assoc}[C_{\text{plru}}]$$
-$$\implies \text{HitRate}[C_{\text{plru}}] \geq \text{HitRate}[C_{\text{lru}}] - \varepsilon_{13}$$
+$$\text{Size}[C_{\text{ideal}}] = \text{Size}[C_{\text{approx}}] \;\wedge\; \text{Assoc}[C_{\text{ideal}}] = \text{Assoc}[C_{\text{approx}}]$$
+$$\implies \text{HitRate}[C_{\text{approx}}] \geq \text{HitRate}[C_{\text{ideal}}] - \varepsilon_{13}$$
 
-**R14.** PLRU–LRU Gap Grows With Associativity
+Domain: same geometry, same workload, $P_{\text{approx}}$ is a hw-feasible version of $P_{\text{ideal}}$.
 
-PLRU's tree structure becomes a progressively worse approximation of full LRU ordering as the number of ways increases, widening the hit rate gap.
+**R14.** Approximation Gap Grows With Decision Space
+
+More candidates to rank (higher associativity) makes approximation harder, widening the gap between an ideal policy and its hardware-constrained version.
 
 $$\text{Assoc}[C_{\text{hi}}] > \text{Assoc}[C_{\text{lo}}] \;\wedge\; \text{same size}$$
-$$\implies \bigl(\text{HitRate}[C_{\text{lru,hi}}] - \text{HitRate}[C_{\text{plru,hi}}]\bigr) \geq \bigl(\text{HitRate}[C_{\text{lru,lo}}] - \text{HitRate}[C_{\text{plru,lo}}]\bigr) - \varepsilon_{14}$$
+$$\implies \bigl(\text{HitRate}[C_{\text{ideal,hi}}] - \text{HitRate}[C_{\text{approx,hi}}]\bigr) \geq \bigl(\text{HitRate}[C_{\text{ideal,lo}}] - \text{HitRate}[C_{\text{approx,lo}}]\bigr) - \varepsilon_{14}$$
+
+Domain: same total size, same workload, $P_{\text{approx}}$ is hw-feasible version of $P_{\text{ideal}}$.
 
 ---
 
@@ -147,7 +155,7 @@ When the working set crosses from fitting to not fitting in the cache, miss rate
 $$\text{WSS}[W_{\text{over}}] > \frac{\text{Size}[C]}{B} \;\wedge\; \text{WSS}[W_{\text{under}}] \leq \frac{\text{Size}[C]}{B} \;\wedge\; \text{same geometry}$$
 $$\implies \text{MissRate}[C_{\text{over}}] \geq 2 \cdot \text{MissRate}[C_{\text{under}}] - \varepsilon_{15}$$
 
-Domain: LRU-family, looping access patterns.
+Domain: any policy, looping or structured access patterns.
 
 **R16.** Capacity Misses Dominate Beyond WSS
 
@@ -163,7 +171,7 @@ If the average number of distinct blocks accessed between two uses of the same b
 
 $$\text{ReuseDistance}[W] \cdot B \geq \text{Size}[C] \implies \text{MissRate}[C] \geq 0.5 - \varepsilon_{17}$$
 
-Domain: LRU, fully-associative.
+Domain: any policy, fully-associative.
 
 **R18.** Temporal Locality Decay Increases Misses
 
@@ -212,16 +220,16 @@ More ways per set means fewer blocks compete for the same slots, directly reduci
 $$\text{Assoc}[C_{\text{hi}}] \geq \text{Assoc}[C_{\text{lo}}] \;\wedge\; \text{Size}[C_{\text{hi}}] = \text{Size}[C_{\text{lo}}]$$
 $$\implies \text{ConflictMisses}[C_{\text{hi}}] \leq \text{ConflictMisses}[C_{\text{lo}}] + \varepsilon_{22}$$
 
-Domain: same policy, same workload.
+Domain: any policy (same for both), same workload.
 
-**R23.** Scan-Resistant Policy Beats LRU on Mixed Workloads
+**R23.** Scan-Aware Beats Scan-Naive on Mixed Workloads
 
-When a workload mixes a streaming scan (large reuse distance) with a recurrent working set that fits in cache, policies that detect and deprioritize scan traffic protect the useful data that LRU would evict.
+When a workload mixes a streaming scan (large reuse distance) with a recurrent working set that fits in cache, policies that detect and deprioritize scan traffic protect the useful data that scan-naive policies would evict.
 
 $$\text{ReuseDistance}[W_{\text{scan}}] > \frac{\text{Size}[C]}{B} \;\wedge\; \text{WSS}[W_{\text{recur}}] < \frac{\text{Size}[C]}{B} \;\wedge\; \text{same geometry}$$
-$$\implies \text{HitRate}[C_{\text{adaptive}}] \geq \text{HitRate}[C_{\text{lru}}] + \varepsilon_{23}$$
+$$\implies \text{HitRate}[C_{\text{scan-aware}}] \geq \text{HitRate}[C_{\text{scan-naive}}] + \varepsilon_{23}$$
 
-Domain: mixed scan + recurrent workload.
+Domain: any scan-aware policy (RRIP, ARC, LIRS, Mockingjay) vs any scan-naive policy (LRU, FIFO).
 
 ---
 
