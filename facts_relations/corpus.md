@@ -20,14 +20,7 @@ The first access to any block always misses regardless of which replacement poli
 
 $$\text{Size}[C_a] = \text{Size}[C_b] \;\wedge\; \text{Assoc}[C_a] = \text{Assoc}[C_b] \implies \text{CompulsoryMisses}[C_a] = \text{CompulsoryMisses}[C_b]$$
 
-**F4.** Replacement Only Affects Capacity + Conflict
-
-Since compulsory misses are fixed, the only way two policies can differ in total misses is through their capacity and conflict miss counts.
-
-$$\text{Size}[C_a] = \text{Size}[C_b] \;\wedge\; \text{Assoc}[C_a] = \text{Assoc}[C_b]$$
-$$\implies \text{MissCount}[C_a] - \text{MissCount}[C_b] = \bigl(\text{CapMisses}[C_a] + \text{ConflMisses}[C_a]\bigr) - \bigl(\text{CapMisses}[C_b] + \text{ConflMisses}[C_b]\bigr)$$
-
-**F5.** Full Associativity Eliminates Conflict Misses
+**F4.** Full Associativity Eliminates Conflict Misses
 
 When every block in the cache can map to any set (i.e., there's only one set), conflicts are impossible by definition.
 
@@ -103,14 +96,6 @@ Once the working set exceeds cache capacity, the majority of misses are due to i
 $$\text{WSS}[W] > \frac{\text{Size}[C]}{B} \implies \text{CapacityMisses}[C] \geq \frac{\text{MissCount}[C]}{2} - \varepsilon_{16}$$
 
 Domain: fully-associative or high-associativity.
-
-**R17.** Reuse Distance Predicts High Miss Rate
-
-If the average number of distinct blocks accessed between two uses of the same block exceeds cache capacity, at least half of all accesses will miss.
-
-$$\text{ReuseDistance}[W] \cdot B \geq \text{Size}[C] \implies \text{MissRate}[C] \geq 0.5 - \varepsilon_{17}$$
-
-Domain: any policy, fully-associative.
 
 **R18.** Temporal Locality Decay Increases Misses
 
@@ -233,15 +218,6 @@ Domain: any policy, same cache, sequential intervals.
 ---
 
 ## Coherence Effects
-
-**R34.** Invalidations Reduce Hit Rate
-
-Coherence invalidations destroy valid cache lines, directly reducing hit rate compared to a scenario with fewer invalidations.
-
-$$\text{Invalidations}[C_a] \geq \text{Invalidations}[C_b] \;\wedge\; \text{same geometry}$$
-$$\implies \text{HitRate}[C_a] \leq \text{HitRate}[C_b] + \varepsilon_{34}$$
-
-Domain: same geometry, same workload, multicore with coherence.
 
 **R35.** 4C Miss Decomposition
 

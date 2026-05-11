@@ -1,16 +1,16 @@
 """
-Corpus of 29 cache replacement facts and relations.
+Corpus of 26 cache replacement facts and relations.
 
 Organized into thematic groups:
-  A. Unconditional Facts (5)
+  A. Unconditional Facts (4)
   B. Cache Size & Associativity Properties (4)
   C. Policy Comparison (1)
-  D. Working Set / Capacity (4)
+  D. Working Set / Capacity (3)
   E. Associativity Effects (1)
   F. Temporal / Interval Relations (2)
   G. Hit Rate Decomposition (5)
   H. Page-Level Memory Footprint (3)
-  I. Coherence Effects (4)
+  I. Coherence Effects (3)
 """
 
 from core import (
@@ -89,39 +89,6 @@ F2_compulsory_misses_policy_independent = relation(
     domain="same workload, same cache geometry, any two policies",
 )
 
-
-# --- F3: Replacement only affects capacity + conflict misses ---
-#
-#   MissCount[a] - MissCount[b] == (CapMisses[a] + ConflMisses[a])
-#                                 - (CapMisses[b] + ConflMisses[b])
-#
-# Corollary of F2: since compulsory misses cancel, the difference in
-# total misses equals the difference in non-compulsory misses.
-
-C_a_f3 = entity("C_a", kind="cache")
-C_b_f3 = entity("C_b", kind="cache")
-
-F3_replacement_affects_only_capacity_conflict = relation(
-    name="replacement_affects_only_capacity_conflict",
-    premises=[
-        conj(
-            constraint(metric(M.SIZE, C_a_f3), CmpOp.EQ, metric(M.SIZE, C_b_f3)),
-            constraint(metric(M.ASSOCIATIVITY, C_a_f3), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_b_f3)),
-        )
-    ],
-    consequent=constraint(
-        sub(metric(M.MISS_COUNT, C_a_f3), metric(M.MISS_COUNT, C_b_f3)),
-        CmpOp.EQ,
-        sub(
-            add(metric(M.CAPACITY_MISSES, C_a_f3), metric(M.CONFLICT_MISSES, C_a_f3)),
-            add(metric(M.CAPACITY_MISSES, C_b_f3), metric(M.CONFLICT_MISSES, C_b_f3)),
-        )
-    ),
-    entities=[C_a_f3, C_b_f3],
-    source="corollary of 3C model and F2",
-    domain="same workload, same cache geometry, any two policies",
-)
 
 
 # --- F4: Full associativity eliminates conflict misses ---
@@ -444,37 +411,6 @@ R16_capacity_misses_dominate_beyond_wss = relation(
     domain="fully-associative or high-associativity (minimizes conflict misses)",
 )
 
-
-# --- R17: Reuse distance predicts high miss rate ---
-#
-#   ReuseDistance[W] * 64 >= Size[C] => MissRate[C] >= 0.5 - ε
-#
-# If the average reuse distance (in blocks) exceeds the cache capacity
-# (in blocks), at least half of accesses miss.
-
-C_r17 = entity("C", kind="cache")
-W_r17 = entity("W", kind="workload")
-e17 = eps("17")
-
-R17_reuse_distance_predicts_high_miss_rate = relation(
-    name="reuse_distance_predicts_high_miss_rate",
-    premises=[
-        constraint(
-            mul(metric(M.REUSE_DISTANCE, W_r17), BLOCK_SIZE),
-            CmpOp.GE,
-            metric(M.SIZE, C_r17)
-        )
-    ],
-    consequent=constraint(
-        metric(M.MISS_RATE, C_r17),
-        CmpOp.GE,
-        sub(lit(0.5), e17)
-    ),
-    entities=[C_r17, W_r17],
-    free_epsilons=[e17],
-    source="Mattson et al. 1970; information-theoretic argument",
-    domain="any policy, fully-associative",
-)
 
 
 # --- R18: Temporal locality decay increases misses ---
@@ -869,38 +805,6 @@ R33_page_growth_increases_evictions = relation(
 # GROUP I: COHERENCE EFFECTS (4)
 # =============================================================================
 
-# --- R34: Higher invalidation rate => lower hit rate ---
-#
-#   Invalidations[C_a] >= Invalidations[C_b] => HitRate[C_a] <= HitRate[C_b] + ε
-#
-# Coherence invalidations remove valid data from the cache, directly
-# increasing miss rate.
-
-C_a_r34 = entity("C_a", kind="cache")
-C_b_r34 = entity("C_b", kind="cache")
-e34 = eps("34")
-
-R34_invalidations_reduce_hit_rate = relation(
-    name="invalidations_reduce_hit_rate",
-    premises=[
-        conj(
-            constraint(metric(M.INVALIDATIONS, C_a_r34), CmpOp.GE,
-                       metric(M.INVALIDATIONS, C_b_r34)),
-            constraint(metric(M.SIZE, C_a_r34), CmpOp.EQ, metric(M.SIZE, C_b_r34)),
-            constraint(metric(M.ASSOCIATIVITY, C_a_r34), CmpOp.EQ,
-                       metric(M.ASSOCIATIVITY, C_b_r34)),
-        )
-    ],
-    consequent=constraint(
-        metric(M.HIT_RATE, C_a_r34),
-        CmpOp.LE,
-        add(metric(M.HIT_RATE, C_b_r34), e34)
-    ),
-    entities=[C_a_r34, C_b_r34],
-    free_epsilons=[e34],
-    source="invalidations destroy cached data",
-    domain="same geometry, same workload, multicore with coherence",
-)
 
 # --- R35: Coherence misses add to total misses ---
 #
@@ -1009,7 +913,6 @@ ALL_RELATIONS = [
     F1_miss_rate_hit_rate_complement,
     F6_hit_rate_bounded,
     F2_compulsory_misses_policy_independent,
-    F3_replacement_affects_only_capacity_conflict,
     F4_full_associativity_zero_conflict_misses,
     # Group B: Cache Size & Associativity Properties
     R3_larger_cache_higher_hr,
@@ -1021,7 +924,6 @@ ALL_RELATIONS = [
     # Group D: Working Set / Capacity
     R15_cliff_at_working_set_boundary,
     R16_capacity_misses_dominate_beyond_wss,
-    R17_reuse_distance_predicts_high_miss_rate,
     R18_locality_decay_increases_misses,
     # Group E: Associativity Effects
     R22_conflict_misses_decrease_with_associativity,
@@ -1039,13 +941,12 @@ ALL_RELATIONS = [
     R32_spatial_locality_bounds_compulsory,
     R33_page_growth_increases_evictions,
     # Group I: Coherence Effects
-    R34_invalidations_reduce_hit_rate,
     R35_4c_decomposition,
     R36_more_sharing_more_coherence_misses,
     R37_more_dirty_lines_more_writebacks,
 ]
 
-assert len(ALL_RELATIONS) == 29, f"Expected 29, got {len(ALL_RELATIONS)}"
+assert len(ALL_RELATIONS) == 26, f"Expected 26, got {len(ALL_RELATIONS)}"
 
 
 if __name__ == "__main__":
