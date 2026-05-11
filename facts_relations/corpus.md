@@ -33,14 +33,6 @@ When every block in the cache can map to any set (i.e., there's only one set), c
 
 $$\text{Assoc}[C] = \frac{\text{Size}[C]}{B} \implies \text{ConflictMisses}[C] = 0$$
 
-**F6.** Stack Policy Inclusion
-
-Under a stack algorithm, the contents of a smaller cache are always a subset of a larger cache, so the larger cache can never have more misses.
-
-$$\text{Size}[C_{\text{large}}] \geq \text{Size}[C_{\text{small}}] \implies \text{MissCount}[C_{\text{large}}] \leq \text{MissCount}[C_{\text{small}}]$$
-
-Domain: LRU or any stack algorithm. Same workload, same associativity.
-
 ---
 
 ## Cache Size & Associativity Properties
@@ -127,18 +119,6 @@ If locality degrades over time (reuse distances grow), later intervals in the ex
 $$\text{ReuseDistance}[t_{\text{later}}] \geq \text{ReuseDistance}[t_{\text{earlier}}] \implies \text{MissRate}[t_{\text{later}}] \geq \text{MissRate}[t_{\text{earlier}}] - \varepsilon_{18}$$
 
 Domain: same cache, same policy, sequential intervals.
-
----
-
-## Thrashing & Pathological
-
-**R19.** LRU Thrashing on Cyclic Pattern
-
-A cyclic scan over N+1 distinct blocks through an N-block LRU cache always evicts the next-needed block, producing zero hits.
-
-$$\text{UniqueBlocks}[W] = \frac{\text{Size}[C]}{B} + 1 \implies \text{HitRate}[C] \leq \varepsilon_{19}$$
-
-Domain: LRU, purely cyclic access pattern. $\varepsilon_{19} \approx 0$.
 
 ---
 

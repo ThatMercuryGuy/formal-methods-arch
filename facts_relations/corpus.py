@@ -1,14 +1,13 @@
 """
-Corpus of 19 cache replacement facts and relations.
+Corpus of 17 cache replacement facts and relations.
 
 Organized into thematic groups:
-  A. Unconditional Facts (6)
+  A. Unconditional Facts (5)
   B. Cache Size & Associativity Properties (4)
   C. Policy Comparison (1)
   D. Working Set / Capacity (4)
-  E. Thrashing & Pathological (1)
-  F. Associativity Effects (1)
-  G. Temporal / Interval Relations (2)
+  E. Associativity Effects (1)
+  F. Temporal / Interval Relations (2)
 """
 
 from core import (
@@ -23,12 +22,7 @@ from core import (
 # =============================================================================
 
 # Policies (kind="policy") — first-class entities bound to caches via `bindings`
-p_lru = entity("LRU", kind="policy")
-p_fifo = entity("FIFO", kind="policy")
-p_random = entity("RANDOM", kind="policy")
 p_opt = entity("OPT", kind="policy")
-p_adaptive = entity("ADAPTIVE", kind="policy")
-p_plru = entity("PLRU", kind="policy")
 
 # Block size constant (bytes) used across many relations
 BLOCK_SIZE = lit(64)
@@ -156,32 +150,6 @@ F4_full_associativity_zero_conflict_misses = relation(
 )
 
 
-# --- F5: Stack policy inclusion property (exact) ---
-#
-#   Size[large] >= Size[small] ∧ both LRU => MissCount[large] <= MissCount[small]
-#
-# For stack algorithms, every block in the smaller cache is also in the
-# larger cache at all times. This is the inclusion property stated as
-# an exact inequality on miss counts.
-
-C_large_f5 = entity("C_large", kind="cache")
-C_small_f5 = entity("C_small", kind="cache")
-
-F5_stack_policy_inclusion = relation(
-    name="stack_policy_inclusion",
-    premises=[
-        constraint(metric(M.SIZE, C_large_f5), CmpOp.GE, metric(M.SIZE, C_small_f5))
-    ],
-    consequent=constraint(
-        metric(M.MISS_COUNT, C_large_f5),
-        CmpOp.LE,
-        metric(M.MISS_COUNT, C_small_f5)
-    ),
-    entities=[C_large_f5, C_small_f5, p_lru],
-    bindings=[(C_large_f5, p_lru), (C_small_f5, p_lru)],
-    source="Mattson et al. 1970 (stack algorithms)",
-    domain="LRU (or any stack algorithm), same workload, same associativity",
-)
 
 
 # --- F6: Hit rate is bounded in [0, 1] ---
@@ -540,47 +508,11 @@ R18_locality_decay_increases_misses = relation(
 )
 
 
-# =============================================================================
-# GROUP E: THRASHING & PATHOLOGICAL (3)
-# =============================================================================
-
-# --- R19: LRU thrashing on cyclic pattern ---
-#
-#   UniqueBlocks[W] == Size[C]/64 + 1 ∧ LRU ∧ cyclic => HitRate[C] <= ε
-#
-# A cyclic access pattern of N+1 distinct blocks on an LRU cache of
-# capacity N blocks produces 0% hit rate — every access evicts the
-# next needed block.
-
-C_r19 = entity("C", kind="cache")
-W_r19 = entity("W_cyclic", kind="workload")
-e19 = eps("19")
-
-R19_lru_thrashing_cyclic = relation(
-    name="lru_thrashing_cyclic",
-    premises=[
-        constraint(
-            metric(M.UNIQUE_BLOCKS, W_r19),
-            CmpOp.EQ,
-            add(div(metric(M.SIZE, C_r19), BLOCK_SIZE), lit(1))
-        )
-    ],
-    consequent=constraint(
-        metric(M.HIT_RATE, C_r19),
-        CmpOp.LE,
-        e19
-    ),
-    entities=[C_r19, W_r19, p_lru],
-    bindings=[(C_r19, p_lru)],
-    free_epsilons=[e19],
-    source="classic LRU thrashing (Hennessy & Patterson)",
-    domain="LRU, purely cyclic/looping access pattern",
-)
 
 
 
 # =============================================================================
-# GROUP F: ASSOCIATIVITY EFFECTS (2)
+# GROUP E: ASSOCIATIVITY EFFECTS (1)
 # =============================================================================
 
 # --- R22: Conflict misses decrease with associativity ---
@@ -617,12 +549,7 @@ R22_conflict_misses_decrease_with_associativity = relation(
 
 
 # =============================================================================
-# GROUP G: BELADY'S ANOMALY / NON-STACK (2)
-# =============================================================================
-
-
-# =============================================================================
-# GROUP H: TEMPORAL / INTERVAL RELATIONS (2)
+# GROUP F: TEMPORAL / INTERVAL RELATIONS (2)
 # =============================================================================
 
 # --- R1 (existing): Higher hit rate implies fewer stalls ---
@@ -681,7 +608,6 @@ ALL_RELATIONS = [
     F2_compulsory_misses_policy_independent,
     F3_replacement_affects_only_capacity_conflict,
     F4_full_associativity_zero_conflict_misses,
-    F5_stack_policy_inclusion,
     # Group B: Cache Size & Associativity Properties
     R3_larger_cache_higher_hr,
     R4_diminishing_assoc_returns,
@@ -694,16 +620,14 @@ ALL_RELATIONS = [
     R16_capacity_misses_dominate_beyond_wss,
     R17_reuse_distance_predicts_high_miss_rate,
     R18_locality_decay_increases_misses,
-    # Group E: Thrashing & Pathological
-    R19_lru_thrashing_cyclic,
-    # Group F: Associativity Effects
+    # Group E: Associativity Effects
     R22_conflict_misses_decrease_with_associativity,
-    # Group G: Temporal / Interval
+    # Group F: Temporal / Interval
     R1_hit_rate_implies_fewer_stalls,
     R2_critical_hit_rate_implies_fewer_stalls,
 ]
 
-assert len(ALL_RELATIONS) == 19, f"Expected 19, got {len(ALL_RELATIONS)}"
+assert len(ALL_RELATIONS) == 17, f"Expected 17, got {len(ALL_RELATIONS)}"
 
 
 if __name__ == "__main__":
