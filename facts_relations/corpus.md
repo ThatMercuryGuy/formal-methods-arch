@@ -152,3 +152,117 @@ Critical hit rate (hits on loads that are on the execution critical path) is a t
 $$\text{CriticalHitRate}[t_a] \geq \text{CriticalHitRate}[t_b] \implies \text{Stalls}[t_a] \leq \text{Stalls}[t_b] + \varepsilon_2$$
 
 Hypothesis: $\varepsilon_2 < \varepsilon_1$.
+
+---
+
+## Hit Rate Decomposition
+
+**R26.** Hit Rate Between Load and Store
+
+Overall hit rate is a weighted average of load and store hit rates, so it falls between the two.
+
+$$\text{LoadHitRate}[C] \geq \text{StoreHitRate}[C] \implies \text{HitRate}[C] \geq \text{StoreHitRate}[C]$$
+
+Domain: any policy, any workload with both loads and stores.
+
+**R27.** Demand Hit Rate ≥ Overall Hit Rate
+
+Prefetch-initiated fills that go unused dilute overall hit rate without hurting demand hits, so demand hit rate is at least as high.
+
+$$\text{DemandHitRate}[C] \geq \text{HitRate}[C] - \varepsilon_{27}$$
+
+Domain: any cache with prefetching enabled.
+
+**R28.** Prefetch Coverage Reduces Demand Misses
+
+Higher prefetch coverage (fraction of would-be demand misses that prefetches eliminate) directly improves demand hit rate.
+
+$$\text{PrefetchCoverage}[C_a] \geq \text{PrefetchCoverage}[C_b] \;\wedge\; \text{same geometry}$$
+$$\implies \text{DemandHitRate}[C_a] \geq \text{DemandHitRate}[C_b] - \varepsilon_{28}$$
+
+Domain: same geometry, same workload, same replacement policy.
+
+**R29.** Low Prefetch Accuracy Hurts Demand Hit Rate
+
+When most prefetched blocks are never used (accuracy ≤ 25%), the cache fills with useless data, reducing demand hit rate compared to no prefetching.
+
+$$\text{PrefetchAccuracy}[C] \leq 0.25 \;\wedge\; \text{same geometry}$$
+$$\implies \text{DemandHitRate}[C_{\text{prefetch}}] \leq \text{DemandHitRate}[C_{\text{no-prefetch}}] + \varepsilon_{29}$$
+
+Domain: same geometry, same workload, same replacement policy.
+
+**R30.** Stores Hit Less Than Loads
+
+Write-allocate caches see lower store hit rates because first-write misses are common for newly allocated data.
+
+$$\text{StoreHitRate}[C] \leq \text{LoadHitRate}[C] + \varepsilon_{30}$$
+
+Domain: write-allocate cache, any policy.
+
+---
+
+## Memory Footprint
+
+**R31.** Larger Footprint → Lower Hit Rate
+
+A workload touching more distinct blocks competes for more cache space, reducing hit rate at the same cache geometry.
+
+$$\text{Footprint}[W_a] \geq \text{Footprint}[W_b] \;\wedge\; \text{same geometry}$$
+$$\implies \text{HitRate}[C_{W_a}] \leq \text{HitRate}[C_{W_b}] + \varepsilon_{31}$$
+
+Domain: any policy $P$, same geometry.
+
+**R32.** Footprint Fits → Occupancy Bounded
+
+When the memory footprint fits entirely in the cache, occupancy stabilizes below saturation.
+
+$$\text{Footprint}[W] \leq \frac{\text{Size}[C]}{B} \implies \text{Occupancy}[C] \leq 1.0 + \varepsilon_{32}$$
+
+Domain: any policy, after warmup.
+
+**R33.** Footprint Exceeds Cache → Full Occupancy
+
+When more distinct blocks are needed than can fit, the cache is fully populated.
+
+$$\text{Footprint}[W] > \frac{\text{Size}[C]}{B} \implies \text{Occupancy}[C] \geq 1.0 - \varepsilon_{33}$$
+
+Domain: any policy, after warmup.
+
+---
+
+## Coherence Effects
+
+**R34.** Invalidations Reduce Hit Rate
+
+Coherence invalidations destroy valid cache lines, directly reducing hit rate compared to a scenario with fewer invalidations.
+
+$$\text{Invalidations}[C_a] \geq \text{Invalidations}[C_b] \;\wedge\; \text{same geometry}$$
+$$\implies \text{HitRate}[C_a] \leq \text{HitRate}[C_b] + \varepsilon_{34}$$
+
+Domain: same geometry, same workload, multicore with coherence.
+
+**R35.** 4C Miss Decomposition
+
+Total misses decompose into compulsory + capacity + conflict + coherence (the fourth C for multicore).
+
+$$\text{MissCount}[C] \geq \text{CompulsoryMisses}[C] + \text{CapacityMisses}[C] + \text{ConflictMisses}[C] + \text{CoherenceMisses}[C] - \varepsilon_{35}$$
+
+Domain: multicore with coherence protocol.
+
+**R36.** More Invalidations → More Coherence Misses
+
+Invalidations are the direct mechanism by which coherence causes misses; more invalidations imply more coherence misses.
+
+$$\text{Invalidations}[C_a] \geq \text{Invalidations}[C_b] \;\wedge\; \text{same geometry}$$
+$$\implies \text{CoherenceMisses}[C_a] \geq \text{CoherenceMisses}[C_b] - \varepsilon_{36}$$
+
+Domain: same geometry, multicore.
+
+**R37.** More Dirty Lines + More Evictions → More Writebacks
+
+Caches with more store hits (more modified resident lines) produce more writebacks when those lines are evicted.
+
+$$\text{StoreHitRate}[C_a] \geq \text{StoreHitRate}[C_b] \;\wedge\; \text{Evictions}[C_a] \geq \text{Evictions}[C_b] \;\wedge\; \text{same size}$$
+$$\implies \text{Writebacks}[C_a] \geq \text{Writebacks}[C_b] - \varepsilon_{37}$$
+
+Domain: write-back cache, same geometry.

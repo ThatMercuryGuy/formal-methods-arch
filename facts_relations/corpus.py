@@ -1,5 +1,5 @@
 """
-Corpus of 17 cache replacement facts and relations.
+Corpus of 29 cache replacement facts and relations.
 
 Organized into thematic groups:
   A. Unconditional Facts (5)
@@ -8,6 +8,9 @@ Organized into thematic groups:
   D. Working Set / Capacity (4)
   E. Associativity Effects (1)
   F. Temporal / Interval Relations (2)
+  G. Hit Rate Decomposition (5)
+  H. Memory Footprint (3)
+  I. Coherence Effects (4)
 """
 
 from core import (
@@ -598,6 +601,387 @@ R2_critical_hit_rate_implies_fewer_stalls = relation(
 
 
 # =============================================================================
+# GROUP G: HIT RATE DECOMPOSITION (5)
+# =============================================================================
+
+# --- R26: Overall hit rate is a weighted mix of load and store hit rates ---
+#
+#   HitRate[C] is between LoadHitRate[C] and StoreHitRate[C]
+#
+# The overall hit rate is a convex combination of load and store hit rates,
+# weighted by their respective access fractions.
+
+C_r26 = entity("C", kind="cache")
+
+R26_hit_rate_between_load_store = relation(
+    name="hit_rate_between_load_and_store",
+    premises=[
+        constraint(metric(M.LOAD_HIT_RATE, C_r26), CmpOp.GE,
+                   metric(M.STORE_HIT_RATE, C_r26))
+    ],
+    consequent=constraint(
+        metric(M.HIT_RATE, C_r26),
+        CmpOp.GE,
+        metric(M.STORE_HIT_RATE, C_r26)
+    ),
+    entities=[C_r26],
+    source="weighted average property",
+    domain="any policy, any workload with both loads and stores",
+)
+
+# --- R27: Demand hit rate >= overall hit rate when prefetches pollute ---
+#
+#   DemandHitRate[C] >= HitRate[C] - ε
+#
+# Prefetch-initiated fills that go unused lower overall hit rate without
+# affecting demand hits. Demand hit rate is at least as high as overall.
+
+C_r27 = entity("C", kind="cache")
+e27 = eps("27")
+
+R27_demand_hr_ge_overall = relation(
+    name="demand_hit_rate_ge_overall",
+    premises=[],
+    consequent=constraint(
+        metric(M.DEMAND_HIT_RATE, C_r27),
+        CmpOp.GE,
+        sub(metric(M.HIT_RATE, C_r27), e27)
+    ),
+    entities=[C_r27],
+    free_epsilons=[e27],
+    source="demand accesses don't include useless prefetch fills",
+    domain="any cache with prefetching enabled",
+)
+
+# --- R28: Prefetch coverage + demand miss rate relationship ---
+#
+#   Higher prefetch coverage => lower demand miss rate
+#
+# If a larger fraction of would-be demand misses are covered by prefetches,
+# the observed demand miss rate decreases.
+
+C_a_r28 = entity("C_a", kind="cache")
+C_b_r28 = entity("C_b", kind="cache")
+e28 = eps("28")
+
+R28_prefetch_coverage_reduces_demand_misses = relation(
+    name="prefetch_coverage_reduces_demand_misses",
+    premises=[
+        conj(
+            constraint(metric(M.PREFETCH_COVERAGE, C_a_r28), CmpOp.GE,
+                       metric(M.PREFETCH_COVERAGE, C_b_r28)),
+            constraint(metric(M.SIZE, C_a_r28), CmpOp.EQ, metric(M.SIZE, C_b_r28)),
+            constraint(metric(M.ASSOCIATIVITY, C_a_r28), CmpOp.EQ,
+                       metric(M.ASSOCIATIVITY, C_b_r28)),
+        )
+    ],
+    consequent=constraint(
+        metric(M.DEMAND_HIT_RATE, C_a_r28),
+        CmpOp.GE,
+        sub(metric(M.DEMAND_HIT_RATE, C_b_r28), e28)
+    ),
+    entities=[C_a_r28, C_b_r28],
+    free_epsilons=[e28],
+    source="definition of coverage: prefetches that prevent demand misses",
+    domain="same geometry, same workload, same replacement policy",
+)
+
+# --- R29: Low prefetch accuracy => effective capacity reduction ---
+#
+#   PrefetchAccuracy[C] low => MissRate[C] increases relative to no-prefetch
+#
+# Inaccurate prefetches fill the cache with useless data, effectively
+# reducing available capacity for demand data.
+
+C_r29 = entity("C_prefetch", kind="cache")
+C_nopf = entity("C_noprefetch", kind="cache")
+e29 = eps("29")
+
+R29_low_prefetch_accuracy_hurts = relation(
+    name="low_prefetch_accuracy_increases_misses",
+    premises=[
+        conj(
+            constraint(metric(M.PREFETCH_ACCURACY, C_r29), CmpOp.LE, lit(0.25)),
+            constraint(metric(M.SIZE, C_r29), CmpOp.EQ, metric(M.SIZE, C_nopf)),
+            constraint(metric(M.ASSOCIATIVITY, C_r29), CmpOp.EQ,
+                       metric(M.ASSOCIATIVITY, C_nopf)),
+        )
+    ],
+    consequent=constraint(
+        metric(M.DEMAND_HIT_RATE, C_r29),
+        CmpOp.LE,
+        add(metric(M.DEMAND_HIT_RATE, C_nopf), e29)
+    ),
+    entities=[C_r29, C_nopf],
+    free_epsilons=[e29],
+    source="cache pollution from inaccurate prefetches",
+    domain="same geometry, same workload, same replacement policy",
+)
+
+# --- R30: Stores hit less than loads ---
+#
+#   StoreHitRate[C] <= LoadHitRate[C] + ε
+#
+# Write-allocate caches see lower store hit rates because first-write
+# misses are common (especially for newly allocated data).
+
+C_r30 = entity("C", kind="cache")
+e30 = eps("30")
+
+R30_stores_hit_less_than_loads = relation(
+    name="stores_hit_less_than_loads",
+    premises=[],
+    consequent=constraint(
+        metric(M.STORE_HIT_RATE, C_r30),
+        CmpOp.LE,
+        add(metric(M.LOAD_HIT_RATE, C_r30), e30)
+    ),
+    entities=[C_r30],
+    free_epsilons=[e30],
+    source="first-write misses on newly allocated data",
+    domain="write-allocate cache, any policy",
+)
+
+
+# =============================================================================
+# GROUP H: MEMORY FOOTPRINT (3)
+# =============================================================================
+
+# --- R31: Larger footprint => lower hit rate ---
+#
+#   MemoryFootprint[W_a] >= MemoryFootprint[W_b] => HitRate[C_a] <= HitRate[C_b] + ε
+#
+# A workload touching more distinct blocks competes for more cache space,
+# reducing overall hit rate.
+
+C_a_r31 = entity("C_a", kind="cache")
+C_b_r31 = entity("C_b", kind="cache")
+W_a_r31 = entity("W_a", kind="workload")
+W_b_r31 = entity("W_b", kind="workload")
+p_r31 = entity("P", kind="policy")
+e31 = eps("31")
+
+R31_larger_footprint_lower_hr = relation(
+    name="larger_footprint_implies_lower_hit_rate",
+    premises=[
+        conj(
+            constraint(metric(M.MEMORY_FOOTPRINT, W_a_r31), CmpOp.GE,
+                       metric(M.MEMORY_FOOTPRINT, W_b_r31)),
+            constraint(metric(M.SIZE, C_a_r31), CmpOp.EQ, metric(M.SIZE, C_b_r31)),
+            constraint(metric(M.ASSOCIATIVITY, C_a_r31), CmpOp.EQ,
+                       metric(M.ASSOCIATIVITY, C_b_r31)),
+        )
+    ],
+    consequent=constraint(
+        metric(M.HIT_RATE, C_a_r31),
+        CmpOp.LE,
+        add(metric(M.HIT_RATE, C_b_r31), e31)
+    ),
+    entities=[C_a_r31, C_b_r31, W_a_r31, W_b_r31, p_r31],
+    bindings=[(C_a_r31, p_r31), (C_b_r31, p_r31)],
+    free_epsilons=[e31],
+    source="more distinct blocks => more contention for cache space",
+    domain="any policy, same geometry",
+)
+
+# --- R32: Footprint within cache => high occupancy ---
+#
+#   MemoryFootprint[W] <= Size[C]/B => Occupancy[C] approaches footprint/capacity
+#
+# When the footprint fits, the cache fills up to exactly the footprint
+# and occupancy stabilizes.
+
+C_r32 = entity("C", kind="cache")
+W_r32 = entity("W", kind="workload")
+e32 = eps("32")
+
+R32_footprint_fits_occupancy_stable = relation(
+    name="footprint_fits_implies_stable_occupancy",
+    premises=[
+        constraint(
+            metric(M.MEMORY_FOOTPRINT, W_r32),
+            CmpOp.LE,
+            div(metric(M.SIZE, C_r32), BLOCK_SIZE)
+        )
+    ],
+    consequent=constraint(
+        metric(M.OCCUPANCY, C_r32),
+        CmpOp.LE,
+        add(lit(1.0), e32)
+    ),
+    entities=[C_r32, W_r32],
+    free_epsilons=[e32],
+    source="footprint smaller than capacity => cache not fully pressured",
+    domain="any policy, after warmup",
+)
+
+# --- R33: Footprint exceeds cache => occupancy saturates at 1.0 ---
+#
+#   MemoryFootprint[W] > Size[C]/B => Occupancy[C] >= 1.0 - ε
+#
+# When more blocks are needed than can fit, the cache is fully occupied.
+
+C_r33 = entity("C", kind="cache")
+W_r33 = entity("W", kind="workload")
+e33 = eps("33")
+
+R33_footprint_exceeds_cache_full_occupancy = relation(
+    name="footprint_exceeds_cache_implies_full_occupancy",
+    premises=[
+        constraint(
+            metric(M.MEMORY_FOOTPRINT, W_r33),
+            CmpOp.GT,
+            div(metric(M.SIZE, C_r33), BLOCK_SIZE)
+        )
+    ],
+    consequent=constraint(
+        metric(M.OCCUPANCY, C_r33),
+        CmpOp.GE,
+        sub(lit(1.0), e33)
+    ),
+    entities=[C_r33, W_r33],
+    free_epsilons=[e33],
+    source="more blocks needed than capacity => all ways populated",
+    domain="any policy, after warmup",
+)
+
+
+# =============================================================================
+# GROUP I: COHERENCE EFFECTS (4)
+# =============================================================================
+
+# --- R34: Higher invalidation rate => lower hit rate ---
+#
+#   Invalidations[C_a] >= Invalidations[C_b] => HitRate[C_a] <= HitRate[C_b] + ε
+#
+# Coherence invalidations remove valid data from the cache, directly
+# increasing miss rate.
+
+C_a_r34 = entity("C_a", kind="cache")
+C_b_r34 = entity("C_b", kind="cache")
+e34 = eps("34")
+
+R34_invalidations_reduce_hit_rate = relation(
+    name="invalidations_reduce_hit_rate",
+    premises=[
+        conj(
+            constraint(metric(M.INVALIDATIONS, C_a_r34), CmpOp.GE,
+                       metric(M.INVALIDATIONS, C_b_r34)),
+            constraint(metric(M.SIZE, C_a_r34), CmpOp.EQ, metric(M.SIZE, C_b_r34)),
+            constraint(metric(M.ASSOCIATIVITY, C_a_r34), CmpOp.EQ,
+                       metric(M.ASSOCIATIVITY, C_b_r34)),
+        )
+    ],
+    consequent=constraint(
+        metric(M.HIT_RATE, C_a_r34),
+        CmpOp.LE,
+        add(metric(M.HIT_RATE, C_b_r34), e34)
+    ),
+    entities=[C_a_r34, C_b_r34],
+    free_epsilons=[e34],
+    source="invalidations destroy cached data",
+    domain="same geometry, same workload, multicore with coherence",
+)
+
+# --- R35: Coherence misses add to total misses ---
+#
+#   MissCount[C] >= CapacityMisses[C] + ConflictMisses[C] + CompulsoryMisses[C]
+#                   + CoherenceMisses[C] - ε
+#
+# The 4C model: total misses decompose into compulsory + capacity +
+# conflict + coherence. This is the 4th C.
+
+C_r35 = entity("C", kind="cache")
+e35 = eps("35")
+
+R35_4c_decomposition = relation(
+    name="four_c_miss_decomposition",
+    premises=[],
+    consequent=constraint(
+        metric(M.MISS_COUNT, C_r35),
+        CmpOp.GE,
+        sub(
+            add(
+                add(metric(M.CAPACITY_MISSES, C_r35), metric(M.CONFLICT_MISSES, C_r35)),
+                add(metric(M.COMPULSORY_MISSES, C_r35), metric(M.COHERENCE_MISSES, C_r35))
+            ),
+            e35
+        )
+    ),
+    entities=[C_r35],
+    free_epsilons=[e35],
+    source="4C miss model extension",
+    domain="multicore with coherence protocol",
+)
+
+# --- R36: More sharing => more coherence misses ---
+#
+#   If workload W_a has more cross-core sharing than W_b,
+#   coherence misses are higher.
+
+C_a_r36 = entity("C_a", kind="cache")
+C_b_r36 = entity("C_b", kind="cache")
+W_a_r36 = entity("W_a", kind="workload")
+W_b_r36 = entity("W_b", kind="workload")
+e36 = eps("36")
+
+R36_more_sharing_more_coherence_misses = relation(
+    name="more_sharing_implies_more_coherence_misses",
+    premises=[
+        conj(
+            constraint(metric(M.INVALIDATIONS, C_a_r36), CmpOp.GE,
+                       metric(M.INVALIDATIONS, C_b_r36)),
+            constraint(metric(M.SIZE, C_a_r36), CmpOp.EQ, metric(M.SIZE, C_b_r36)),
+            constraint(metric(M.ASSOCIATIVITY, C_a_r36), CmpOp.EQ,
+                       metric(M.ASSOCIATIVITY, C_b_r36)),
+        )
+    ],
+    consequent=constraint(
+        metric(M.COHERENCE_MISSES, C_a_r36),
+        CmpOp.GE,
+        sub(metric(M.COHERENCE_MISSES, C_b_r36), e36)
+    ),
+    entities=[C_a_r36, C_b_r36, W_a_r36, W_b_r36],
+    free_epsilons=[e36],
+    source="invalidations are the mechanism of coherence misses",
+    domain="same geometry, multicore",
+)
+
+# --- R37: Writebacks increase with eviction of dirty lines ---
+#
+#   Higher store hit rate (more modified lines) => more writebacks on eviction
+#
+# Caches with more dirty lines (higher store hit rate means more modified
+# blocks resident) produce more writebacks when those lines are evicted.
+
+C_a_r37 = entity("C_a", kind="cache")
+C_b_r37 = entity("C_b", kind="cache")
+e37 = eps("37")
+
+R37_more_dirty_lines_more_writebacks = relation(
+    name="more_dirty_lines_more_writebacks",
+    premises=[
+        conj(
+            constraint(metric(M.STORE_HIT_RATE, C_a_r37), CmpOp.GE,
+                       metric(M.STORE_HIT_RATE, C_b_r37)),
+            constraint(metric(M.SIZE, C_a_r37), CmpOp.EQ, metric(M.SIZE, C_b_r37)),
+            constraint(metric(M.EVICTIONS, C_a_r37), CmpOp.GE,
+                       metric(M.EVICTIONS, C_b_r37)),
+        )
+    ],
+    consequent=constraint(
+        metric(M.WRITEBACKS, C_a_r37),
+        CmpOp.GE,
+        sub(metric(M.WRITEBACKS, C_b_r37), e37)
+    ),
+    entities=[C_a_r37, C_b_r37],
+    free_epsilons=[e37],
+    source="dirty evictions require writeback",
+    domain="write-back cache, same geometry",
+)
+
+
+# =============================================================================
 # CORPUS COLLECTION
 # =============================================================================
 
@@ -625,9 +1009,24 @@ ALL_RELATIONS = [
     # Group F: Temporal / Interval
     R1_hit_rate_implies_fewer_stalls,
     R2_critical_hit_rate_implies_fewer_stalls,
+    # Group G: Hit Rate Decomposition
+    R26_hit_rate_between_load_store,
+    R27_demand_hr_ge_overall,
+    R28_prefetch_coverage_reduces_demand_misses,
+    R29_low_prefetch_accuracy_hurts,
+    R30_stores_hit_less_than_loads,
+    # Group H: Memory Footprint
+    R31_larger_footprint_lower_hr,
+    R32_footprint_fits_occupancy_stable,
+    R33_footprint_exceeds_cache_full_occupancy,
+    # Group I: Coherence Effects
+    R34_invalidations_reduce_hit_rate,
+    R35_4c_decomposition,
+    R36_more_sharing_more_coherence_misses,
+    R37_more_dirty_lines_more_writebacks,
 ]
 
-assert len(ALL_RELATIONS) == 17, f"Expected 17, got {len(ALL_RELATIONS)}"
+assert len(ALL_RELATIONS) == 29, f"Expected 29, got {len(ALL_RELATIONS)}"
 
 
 if __name__ == "__main__":
