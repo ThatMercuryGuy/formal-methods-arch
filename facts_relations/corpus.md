@@ -20,14 +20,7 @@ The first access to any block always misses regardless of which replacement poli
 
 $$\text{Size}[C_a] = \text{Size}[C_b] \;\wedge\; \text{Assoc}[C_a] = \text{Assoc}[C_b] \implies \text{CompulsoryMisses}[C_a] = \text{CompulsoryMisses}[C_b]$$
 
-**F4.** Replacement Only Affects Capacity + Conflict
-
-Since compulsory misses are fixed, the only way two policies can differ in total misses is through their capacity and conflict miss counts.
-
-$$\text{Size}[C_a] = \text{Size}[C_b] \;\wedge\; \text{Assoc}[C_a] = \text{Assoc}[C_b]$$
-$$\implies \text{MissCount}[C_a] - \text{MissCount}[C_b] = \bigl(\text{CapMisses}[C_a] + \text{ConflMisses}[C_a]\bigr) - \bigl(\text{CapMisses}[C_b] + \text{ConflMisses}[C_b]\bigr)$$
-
-**F5.** Full Associativity Eliminates Conflict Misses
+**F4.** Full Associativity Eliminates Conflict Misses
 
 When every block in the cache can map to any set (i.e., there's only one set), conflicts are impossible by definition.
 
@@ -104,14 +97,6 @@ $$\text{WSS}[W] > \frac{\text{Size}[C]}{B} \implies \text{CapacityMisses}[C] \ge
 
 Domain: fully-associative or high-associativity.
 
-**R17.** Reuse Distance Predicts High Miss Rate
-
-If the average number of distinct blocks accessed between two uses of the same block exceeds cache capacity, at least half of all accesses will miss.
-
-$$\text{ReuseDistance}[W] \cdot B \geq \text{Size}[C] \implies \text{MissRate}[C] \geq 0.5 - \varepsilon_{17}$$
-
-Domain: any policy, fully-associative.
-
 **R18.** Temporal Locality Decay Increases Misses
 
 If locality degrades over time (reuse distances grow), later intervals in the execution experience higher miss rates than earlier ones.
@@ -152,3 +137,110 @@ Critical hit rate (hits on loads that are on the execution critical path) is a t
 $$\text{CriticalHitRate}[t_a] \geq \text{CriticalHitRate}[t_b] \implies \text{Stalls}[t_a] \leq \text{Stalls}[t_b] + \varepsilon_2$$
 
 Hypothesis: $\varepsilon_2 < \varepsilon_1$.
+
+---
+
+## Hit Rate Decomposition
+
+**R26.** Hit Rate Between Load and Store
+
+Overall hit rate is a weighted average of load and store hit rates, so it falls between the two.
+
+$$\text{LoadHitRate}[C] \geq \text{StoreHitRate}[C] \implies \text{HitRate}[C] \geq \text{StoreHitRate}[C]$$
+
+Domain: any policy, any workload with both loads and stores.
+
+**R27.** Demand Hit Rate ≥ Overall Hit Rate
+
+Prefetch-initiated fills that go unused dilute overall hit rate without hurting demand hits, so demand hit rate is at least as high.
+
+$$\text{DemandHitRate}[C] \geq \text{HitRate}[C] - \varepsilon_{27}$$
+
+Domain: any cache with prefetching enabled.
+
+**R28.** Prefetch Coverage Reduces Demand Misses
+
+Higher prefetch coverage (fraction of would-be demand misses that prefetches eliminate) directly improves demand hit rate.
+
+$$\text{PrefetchCoverage}[C_a] \geq \text{PrefetchCoverage}[C_b] \;\wedge\; \text{same geometry}$$
+$$\implies \text{DemandHitRate}[C_a] \geq \text{DemandHitRate}[C_b] - \varepsilon_{28}$$
+
+Domain: same geometry, same workload, same replacement policy.
+
+**R29.** Low Prefetch Accuracy Hurts Demand Hit Rate
+
+When most prefetched blocks are never used (accuracy ≤ 25%), the cache fills with useless data, reducing demand hit rate compared to no prefetching.
+
+$$\text{PrefetchAccuracy}[C] \leq 0.25 \;\wedge\; \text{same geometry}$$
+$$\implies \text{DemandHitRate}[C_{\text{prefetch}}] \leq \text{DemandHitRate}[C_{\text{no-prefetch}}] + \varepsilon_{29}$$
+
+Domain: same geometry, same workload, same replacement policy.
+
+**R30.** Stores Hit Less Than Loads
+
+Write-allocate caches see lower store hit rates because first-write misses are common for newly allocated data.
+
+$$\text{StoreHitRate}[C] \leq \text{LoadHitRate}[C] + \varepsilon_{30}$$
+
+Domain: write-allocate cache, any policy.
+
+---
+
+## Page-Level Memory Footprint
+
+Memory footprint here means **distinct pages touched** — a coarser granularity than cache blocks. This matters because a workload can touch many pages but reuse few lines per page (TLB pressure without proportional cache pressure), or touch few pages but stride across many lines within them (high block-level WSS from few pages).
+
+**R31.** More Pages Touched → Higher Miss Rate
+
+Touching more pages scatters accesses across a wider address range, reducing per-set reuse density and increasing miss rate.
+
+$$\text{Footprint}[W_a] \geq \text{Footprint}[W_b] \;\wedge\; \text{same geometry} \;\wedge\; \text{same total accesses}$$
+$$\implies \text{MissRate}[C_{W_a}] \geq \text{MissRate}[C_{W_b}] - \varepsilon_{31}$$
+
+Domain: any policy $P$, same geometry, same total access count.
+
+**R32.** Good Spatial Locality Bounds Compulsory Misses
+
+When the block-level working set size approaches page_footprint × blocks_per_page, the workload uses most lines within each page it touches. Each new page contributes at least one compulsory miss.
+
+$$\text{WSS}[W] \geq \text{Footprint}[W] \cdot \frac{\text{PageSize}}{B} - \varepsilon_{32} \implies \text{CompulsoryMisses}[C] \geq \text{Footprint}[W]$$
+
+Domain: any policy, any geometry.
+
+**R33.** Page Footprint Growth Increases Evictions
+
+As a program touches new pages over time, it brings in previously-unseen blocks that compete for capacity, increasing eviction pressure.
+
+$$\text{Footprint}[t_{\text{later}}] > \text{Footprint}[t_{\text{earlier}}] \implies \text{Evictions}[t_{\text{later}}] \geq \text{Evictions}[t_{\text{earlier}}] - \varepsilon_{33}$$
+
+Domain: any policy, same cache, sequential intervals.
+
+---
+
+## Coherence Effects
+
+**R35.** 4C Miss Decomposition
+
+Total misses decompose into compulsory + capacity + conflict + coherence (the fourth C for multicore).
+
+$$\text{MissCount}[C] \geq \text{CompulsoryMisses}[C] + \text{CapacityMisses}[C] + \text{ConflictMisses}[C] + \text{CoherenceMisses}[C] - \varepsilon_{35}$$
+
+Domain: multicore with coherence protocol.
+
+**R36.** More Invalidations → More Coherence Misses
+
+Invalidations are the direct mechanism by which coherence causes misses; more invalidations imply more coherence misses.
+
+$$\text{Invalidations}[C_a] \geq \text{Invalidations}[C_b] \;\wedge\; \text{same geometry}$$
+$$\implies \text{CoherenceMisses}[C_a] \geq \text{CoherenceMisses}[C_b] - \varepsilon_{36}$$
+
+Domain: same geometry, multicore.
+
+**R37.** More Dirty Lines + More Evictions → More Writebacks
+
+Caches with more store hits (more modified resident lines) produce more writebacks when those lines are evicted.
+
+$$\text{StoreHitRate}[C_a] \geq \text{StoreHitRate}[C_b] \;\wedge\; \text{Evictions}[C_a] \geq \text{Evictions}[C_b] \;\wedge\; \text{same size}$$
+$$\implies \text{Writebacks}[C_a] \geq \text{Writebacks}[C_b] - \varepsilon_{37}$$
+
+Domain: write-back cache, same geometry.

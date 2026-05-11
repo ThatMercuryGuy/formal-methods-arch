@@ -213,6 +213,16 @@ class MetricKind(Enum):
     MISS_COUNT = auto()         # absolute miss count (not a rate)
     ACCESSES = auto()           # total number of cache accesses
     STACK_DEPTH = auto()        # maximum stack depth used by the policy
+    DEMAND_HIT_RATE = auto()    # hit rate for demand (non-prefetch) accesses only
+    STORE_HIT_RATE = auto()     # hit rate for store/write accesses
+    LOAD_HIT_RATE = auto()      # hit rate for load/read accesses
+    PREFETCH_HIT_RATE = auto()  # hit rate for prefetch-initiated accesses
+    PREFETCH_ACCURACY = auto()  # fraction of prefetched blocks that are actually used
+    PREFETCH_COVERAGE = auto()  # fraction of demand misses eliminated by prefetching
+    MEMORY_FOOTPRINT = auto()   # distinct PAGES touched over interval (page-granularity)
+    INVALIDATIONS = auto()      # coherence invalidations received
+    COHERENCE_MISSES = auto()   # misses caused by coherence (4th C)
+    WRITEBACKS = auto()         # dirty evictions requiring writeback
 
     def __repr__(self):
         return self.name
