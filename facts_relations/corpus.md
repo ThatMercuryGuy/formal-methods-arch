@@ -201,32 +201,34 @@ Domain: write-allocate cache, any policy.
 
 ---
 
-## Memory Footprint
+## Page-Level Memory Footprint
 
-**R31.** Larger Footprint → Lower Hit Rate
+Memory footprint here means **distinct pages touched** — a coarser granularity than cache blocks. This matters because a workload can touch many pages but reuse few lines per page (TLB pressure without proportional cache pressure), or touch few pages but stride across many lines within them (high block-level WSS from few pages).
 
-A workload touching more distinct blocks competes for more cache space, reducing hit rate at the same cache geometry.
+**R31.** More Pages Touched → Higher Miss Rate
 
-$$\text{Footprint}[W_a] \geq \text{Footprint}[W_b] \;\wedge\; \text{same geometry}$$
-$$\implies \text{HitRate}[C_{W_a}] \leq \text{HitRate}[C_{W_b}] + \varepsilon_{31}$$
+Touching more pages scatters accesses across a wider address range, reducing per-set reuse density and increasing miss rate.
 
-Domain: any policy $P$, same geometry.
+$$\text{Footprint}[W_a] \geq \text{Footprint}[W_b] \;\wedge\; \text{same geometry} \;\wedge\; \text{same total accesses}$$
+$$\implies \text{MissRate}[C_{W_a}] \geq \text{MissRate}[C_{W_b}] - \varepsilon_{31}$$
 
-**R32.** Footprint Fits → Occupancy Bounded
+Domain: any policy $P$, same geometry, same total access count.
 
-When the memory footprint fits entirely in the cache, occupancy stabilizes below saturation.
+**R32.** Good Spatial Locality Bounds Compulsory Misses
 
-$$\text{Footprint}[W] \leq \frac{\text{Size}[C]}{B} \implies \text{Occupancy}[C] \leq 1.0 + \varepsilon_{32}$$
+When the block-level working set size approaches page_footprint × blocks_per_page, the workload uses most lines within each page it touches. Each new page contributes at least one compulsory miss.
 
-Domain: any policy, after warmup.
+$$\text{WSS}[W] \geq \text{Footprint}[W] \cdot \frac{\text{PageSize}}{B} - \varepsilon_{32} \implies \text{CompulsoryMisses}[C] \geq \text{Footprint}[W]$$
 
-**R33.** Footprint Exceeds Cache → Full Occupancy
+Domain: any policy, any geometry.
 
-When more distinct blocks are needed than can fit, the cache is fully populated.
+**R33.** Page Footprint Growth Increases Evictions
 
-$$\text{Footprint}[W] > \frac{\text{Size}[C]}{B} \implies \text{Occupancy}[C] \geq 1.0 - \varepsilon_{33}$$
+As a program touches new pages over time, it brings in previously-unseen blocks that compete for capacity, increasing eviction pressure.
 
-Domain: any policy, after warmup.
+$$\text{Footprint}[t_{\text{later}}] > \text{Footprint}[t_{\text{earlier}}] \implies \text{Evictions}[t_{\text{later}}] \geq \text{Evictions}[t_{\text{earlier}}] - \varepsilon_{33}$$
+
+Domain: any policy, same cache, sequential intervals.
 
 ---
 

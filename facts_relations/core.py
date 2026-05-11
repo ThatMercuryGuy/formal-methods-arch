@@ -219,11 +219,10 @@ class MetricKind(Enum):
     PREFETCH_HIT_RATE = auto()  # hit rate for prefetch-initiated accesses
     PREFETCH_ACCURACY = auto()  # fraction of prefetched blocks that are actually used
     PREFETCH_COVERAGE = auto()  # fraction of demand misses eliminated by prefetching
-    MEMORY_FOOTPRINT = auto()   # number of distinct pages/blocks touched over interval
+    MEMORY_FOOTPRINT = auto()   # distinct PAGES touched over interval (page-granularity)
     INVALIDATIONS = auto()      # coherence invalidations received
     COHERENCE_MISSES = auto()   # misses caused by coherence (4th C)
     WRITEBACKS = auto()         # dirty evictions requiring writeback
-    OCCUPANCY = auto()          # fraction of cache capacity currently holding valid data
 
     def __repr__(self):
         return self.name

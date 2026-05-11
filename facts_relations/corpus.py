@@ -9,7 +9,7 @@ Organized into thematic groups:
   E. Associativity Effects (1)
   F. Temporal / Interval Relations (2)
   G. Hit Rate Decomposition (5)
-  H. Memory Footprint (3)
+  H. Page-Level Memory Footprint (3)
   I. Coherence Effects (4)
 """
 
@@ -744,15 +744,25 @@ R30_stores_hit_less_than_loads = relation(
 
 
 # =============================================================================
-# GROUP H: MEMORY FOOTPRINT (3)
+# GROUP H: PAGE-LEVEL MEMORY FOOTPRINT (3)
 # =============================================================================
+# MEMORY_FOOTPRINT here means "distinct pages touched" — a coarser
+# granularity than cache blocks. This captures spatial behavior at the
+# page level, which matters independently of block-level reuse because:
+#   - A workload can touch many pages but reuse few cache lines per page
+#     (poor spatial locality within pages: TLB pressure without proportional
+#     cache pressure)
+#   - Or touch few pages but stride across many cache lines within them
+#     (good page locality, but high block-level working set)
 
-# --- R31: Larger footprint => lower hit rate ---
+PAGE_SIZE = lit(4096)
+
+# --- R31: More pages touched => higher miss rate ---
 #
-#   MemoryFootprint[W_a] >= MemoryFootprint[W_b] => HitRate[C_a] <= HitRate[C_b] + ε
+#   MemoryFootprint[W_a] >= MemoryFootprint[W_b] => MissRate[C_a] >= MissRate[C_b] - ε
 #
-# A workload touching more distinct blocks competes for more cache space,
-# reducing overall hit rate.
+# Touching more pages means the access stream spans a wider address space,
+# scattering blocks across more cache sets and reducing reuse density.
 
 C_a_r31 = entity("C_a", kind="cache")
 C_b_r31 = entity("C_b", kind="cache")
@@ -761,8 +771,8 @@ W_b_r31 = entity("W_b", kind="workload")
 p_r31 = entity("P", kind="policy")
 e31 = eps("31")
 
-R31_larger_footprint_lower_hr = relation(
-    name="larger_footprint_implies_lower_hit_rate",
+R31_more_pages_higher_miss_rate = relation(
+    name="more_pages_touched_implies_higher_miss_rate",
     premises=[
         conj(
             constraint(metric(M.MEMORY_FOOTPRINT, W_a_r31), CmpOp.GE,
@@ -770,79 +780,88 @@ R31_larger_footprint_lower_hr = relation(
             constraint(metric(M.SIZE, C_a_r31), CmpOp.EQ, metric(M.SIZE, C_b_r31)),
             constraint(metric(M.ASSOCIATIVITY, C_a_r31), CmpOp.EQ,
                        metric(M.ASSOCIATIVITY, C_b_r31)),
+            constraint(metric(M.ACCESSES, C_a_r31), CmpOp.EQ,
+                       metric(M.ACCESSES, C_b_r31)),
         )
     ],
     consequent=constraint(
-        metric(M.HIT_RATE, C_a_r31),
-        CmpOp.LE,
-        add(metric(M.HIT_RATE, C_b_r31), e31)
+        metric(M.MISS_RATE, C_a_r31),
+        CmpOp.GE,
+        sub(metric(M.MISS_RATE, C_b_r31), e31)
     ),
     entities=[C_a_r31, C_b_r31, W_a_r31, W_b_r31, p_r31],
     bindings=[(C_a_r31, p_r31), (C_b_r31, p_r31)],
     free_epsilons=[e31],
-    source="more distinct blocks => more contention for cache space",
-    domain="any policy, same geometry",
+    source="wider address scatter => less set-level reuse",
+    domain="any policy, same geometry, same total accesses",
 )
 
-# --- R32: Footprint within cache => high occupancy ---
+# --- R32: Page footprint vs block WSS divergence predicts spatial locality ---
 #
-#   MemoryFootprint[W] <= Size[C]/B => Occupancy[C] approaches footprint/capacity
+#   MemoryFootprint[W] * (PageSize/B) >> WorkingSetSize[W]
+#     => poor spatial locality (few blocks used per page)
 #
-# When the footprint fits, the cache fills up to exactly the footprint
-# and occupancy stabilizes.
+# When the page footprint scaled to blocks is much larger than the
+# actual block-level working set, spatial locality within pages is high.
+# Conversely, when they're similar, every page contributes many unique blocks.
+#
+# Stated as: if page_footprint * blocks_per_page is close to WSS,
+# then spatial locality is good and compulsory misses are bounded.
 
 C_r32 = entity("C", kind="cache")
 W_r32 = entity("W", kind="workload")
 e32 = eps("32")
 
-R32_footprint_fits_occupancy_stable = relation(
-    name="footprint_fits_implies_stable_occupancy",
+R32_spatial_locality_bounds_compulsory = relation(
+    name="good_spatial_locality_bounds_compulsory_misses",
     premises=[
         constraint(
-            metric(M.MEMORY_FOOTPRINT, W_r32),
-            CmpOp.LE,
-            div(metric(M.SIZE, C_r32), BLOCK_SIZE)
+            metric(M.WORKING_SET_SIZE, W_r32),
+            CmpOp.GE,
+            sub(mul(metric(M.MEMORY_FOOTPRINT, W_r32), div(PAGE_SIZE, BLOCK_SIZE)), e32)
         )
     ],
     consequent=constraint(
-        metric(M.OCCUPANCY, C_r32),
-        CmpOp.LE,
-        add(lit(1.0), e32)
+        metric(M.COMPULSORY_MISSES, C_r32),
+        CmpOp.GE,
+        metric(M.MEMORY_FOOTPRINT, W_r32)
     ),
     entities=[C_r32, W_r32],
     free_epsilons=[e32],
-    source="footprint smaller than capacity => cache not fully pressured",
-    domain="any policy, after warmup",
+    source="each new page contributes at least one compulsory miss",
+    domain="any policy, any geometry",
 )
 
-# --- R33: Footprint exceeds cache => occupancy saturates at 1.0 ---
+# --- R33: Page footprint growth rate predicts capacity pressure ---
 #
-#   MemoryFootprint[W] > Size[C]/B => Occupancy[C] >= 1.0 - ε
+#   MemoryFootprint[t_later] > MemoryFootprint[t_earlier]
+#     => Evictions[t_later] >= Evictions[t_earlier] - ε
 #
-# When more blocks are needed than can fit, the cache is fully occupied.
+# As the program touches new pages over time, eviction pressure increases
+# because new page accesses bring in blocks that haven't been seen before.
 
-C_r33 = entity("C", kind="cache")
-W_r33 = entity("W", kind="workload")
+t_early_r33 = entity("t_earlier", kind="interval")
+t_late_r33 = entity("t_later", kind="interval")
 e33 = eps("33")
 
-R33_footprint_exceeds_cache_full_occupancy = relation(
-    name="footprint_exceeds_cache_implies_full_occupancy",
+R33_page_growth_increases_evictions = relation(
+    name="page_footprint_growth_increases_evictions",
     premises=[
         constraint(
-            metric(M.MEMORY_FOOTPRINT, W_r33),
+            metric(M.MEMORY_FOOTPRINT, t_late_r33),
             CmpOp.GT,
-            div(metric(M.SIZE, C_r33), BLOCK_SIZE)
+            metric(M.MEMORY_FOOTPRINT, t_early_r33)
         )
     ],
     consequent=constraint(
-        metric(M.OCCUPANCY, C_r33),
+        metric(M.EVICTIONS, t_late_r33),
         CmpOp.GE,
-        sub(lit(1.0), e33)
+        sub(metric(M.EVICTIONS, t_early_r33), e33)
     ),
-    entities=[C_r33, W_r33],
+    entities=[t_early_r33, t_late_r33],
     free_epsilons=[e33],
-    source="more blocks needed than capacity => all ways populated",
-    domain="any policy, after warmup",
+    source="new pages bring cold blocks that compete for capacity",
+    domain="any policy, same cache, sequential intervals",
 )
 
 
@@ -1015,10 +1034,10 @@ ALL_RELATIONS = [
     R28_prefetch_coverage_reduces_demand_misses,
     R29_low_prefetch_accuracy_hurts,
     R30_stores_hit_less_than_loads,
-    # Group H: Memory Footprint
-    R31_larger_footprint_lower_hr,
-    R32_footprint_fits_occupancy_stable,
-    R33_footprint_exceeds_cache_full_occupancy,
+    # Group H: Page-Level Memory Footprint
+    R31_more_pages_higher_miss_rate,
+    R32_spatial_locality_bounds_compulsory,
+    R33_page_growth_increases_evictions,
     # Group I: Coherence Effects
     R34_invalidations_reduce_hit_rate,
     R35_4c_decomposition,
