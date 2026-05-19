@@ -14,11 +14,14 @@ Given a gem5 stats.txt file and one or more entity bindings, this module:
 3. Walks the Relation's expression AST, substituting concrete values.
 4. Reports whether the relation holds, is violated, or can't be evaluated.
 
-For relations with free epsilons, the key output is the **empirical slack**:
-the minimum epsilon value that makes the consequent true for this data point.
-  - Negative slack: relation holds with margin (the bound is loose).
-  - Zero slack: relation holds exactly at the boundary.
-  - Positive slack: relation is violated by that amount.
+For relations with free epsilons, the key output is the **empirical epsilon
+bound** — the value of ε that makes the consequent exactly true for this data.
+  - Negative: relation holds with that much margin.
+  - Zero: holds exactly at the boundary.
+  - Positive: violated by that amount.
+
+Relations without free epsilons (exact/definitional facts like F1, F2) just
+report True/False — there is no bound to compute.
 
 ================================================================================
 EVALUATION MODES
@@ -106,14 +109,16 @@ EvalResult fields:
     relation_name    — which relation was evaluated
     premises_hold    — True/False/None (None = couldn't check)
     consequent_holds — True/False/None
-    slack            — {epsilon_name: float} for relations with free epsilons
+    slack            — {epsilon_name: float} for relations with free epsilons.
+                       Sign convention: negative = holds, positive = violated.
+                       None for exact relations (no epsilon to solve for).
     missing_metrics  — list of what couldn't be resolved
 
 EvalResult statuses:
-    HOLDS                    — consequent is true (slack <= 0 if epsilons present)
-    VIOLATED                 — consequent is false (slack > 0)
-    VACUOUS (premises not met) — premises are false, relation doesn't apply
-    UNEVALUABLE              — missing metrics or entity bindings
+    HOLDS                      — consequent satisfied (slack <= 0 if epsilons)
+    VIOLATED                   — consequent broken (slack > 0)
+    VACUOUS (premises not met) — premises false, relation doesn't apply to this data
+    UNEVALUABLE                — missing metrics or entity bindings
 """
 
 from __future__ import annotations
@@ -437,6 +442,37 @@ def compute_slack(
     return result
 
 
+def compute_residual(
+    consequent: Constraint,
+    bindings: dict[str, EntityBinding],
+) -> float | None:
+    """Compute the residual for an exact (epsilon-free) constraint.
+
+    Returns how far the data is from satisfying/violating the constraint:
+      - For lhs <= rhs: residual = lhs - rhs (negative = holds with margin)
+      - For lhs >= rhs: residual = rhs - lhs (negative = holds with margin)
+      - For lhs == rhs: residual = |lhs - rhs|
+
+    Positive means violated, negative means holds with that much margin.
+    """
+    lhs_val = eval_expr(consequent.lhs, bindings)
+    rhs_val = eval_expr(consequent.rhs, bindings)
+
+    if lhs_val is None or rhs_val is None:
+        return None
+
+    match consequent.op:
+        case CmpOp.LE | CmpOp.LT:
+            return lhs_val - rhs_val
+        case CmpOp.GE | CmpOp.GT:
+            return rhs_val - lhs_val
+        case CmpOp.EQ:
+            return abs(lhs_val - rhs_val)
+        case CmpOp.NE:
+            return -abs(lhs_val - rhs_val)
+    return None
+
+
 # =============================================================================
 # RELATION EVALUATION
 # =============================================================================
@@ -570,7 +606,7 @@ def evaluate_relation(
             slack=slack,
         )
     else:
-        # Check mode: no epsilons, just True/False
+        # Exact relation (no free epsilons): just True/False
         holds = eval_constraint(relation.consequent, bindings_dict)
         return EvalResult(
             relation_name=relation.name,
