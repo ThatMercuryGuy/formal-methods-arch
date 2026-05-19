@@ -1,0 +1,83 @@
+============================================================
+Stats file: bfs_small.txt (2649 stats parsed)
+============================================================
+
+--- Single-entity relations (evaluable per cache level) ---
+
+  [LLC] (board.cache_hierarchy.llcache)
+    [miss_rate_hit_rate_complement] HOLDS
+    [hit_rate_bounded] HOLDS
+    [hit_rate_between_load_and_store] UNEVALUABLE
+  missing: could not resolve consequent metrics
+    [stores_hit_less_than_loads] UNEVALUABLE
+  missing: could not resolve consequent metrics
+    [four_c_miss_decomposition] UNEVALUABLE
+  missing: could not resolve consequent metrics
+
+--- Multi-entity relations (need separate runs) ---
+
+  [compulsory_misses_policy_independent] entities: C_a, C_b, P_a, P_b
+    NOT EVALUABLE from single stats file
+  [larger_cache_implies_higher_hit_rate] entities: LLC_a, LLC_b, P
+    NOT EVALUABLE from single stats file
+  [diminishing_returns_of_associativity] entities: LLC_a, LLC_b, LLC_c, P
+    NOT EVALUABLE from single stats file
+  [opt_upper_bounds_all_policies] entities: C_opt, C_any, OPT, P_any
+    NOT EVALUABLE from single stats file
+  [conflict_misses_decrease_with_associativity] entities: C_hiassoc, C_loassoc
+    NOT EVALUABLE from single stats file
+  [hit_rate_implies_fewer_stalls] entities: t_a, t_b
+    NOT EVALUABLE from single stats file
+  [critical_hit_rate_implies_fewer_stalls] entities: t_a, t_b
+    NOT EVALUABLE from single stats file
+  [prefetch_coverage_reduces_demand_misses] entities: C_a, C_b
+    NOT EVALUABLE from single stats file
+  [low_prefetch_accuracy_increases_misses] entities: C_prefetch, C_noprefetch
+    NOT EVALUABLE from single stats file
+  [more_sharing_implies_more_coherence_misses] entities: C_a, C_b, W_a, W_b
+    NOT EVALUABLE from single stats file
+  [more_dirty_lines_more_writebacks] entities: C_a, C_b
+    NOT EVALUABLE from single stats file
+
+
+============================================================
+Stats file: matmul_small.txt (2577 stats parsed)
+============================================================
+
+--- Single-entity relations (evaluable per cache level) ---
+
+  [LLC] (board.cache_hierarchy.llcache)
+    [miss_rate_hit_rate_complement] HOLDS
+    [hit_rate_bounded] HOLDS
+    [hit_rate_between_load_and_store] UNEVALUABLE
+  missing: could not resolve consequent metrics
+    [stores_hit_less_than_loads] UNEVALUABLE
+  missing: could not resolve consequent metrics
+    [four_c_miss_decomposition] UNEVALUABLE
+  missing: could not resolve consequent metrics
+
+--- Multi-entity relations (need separate runs) ---
+
+  [compulsory_misses_policy_independent] entities: C_a, C_b, P_a, P_b
+    NOT EVALUABLE from single stats file
+  [larger_cache_implies_higher_hit_rate] entities: LLC_a, LLC_b, P
+    NOT EVALUABLE from single stats file
+  [diminishing_returns_of_associativity] entities: LLC_a, LLC_b, LLC_c, P
+    NOT EVALUABLE from single stats file
+  [opt_upper_bounds_all_policies] entities: C_opt, C_any, OPT, P_any
+    NOT EVALUABLE from single stats file
+  [conflict_misses_decrease_with_associativity] entities: C_hiassoc, C_loassoc
+    NOT EVALUABLE from single stats file
+  [hit_rate_implies_fewer_stalls] entities: t_a, t_b
+    NOT EVALUABLE from single stats file
+  [critical_hit_rate_implies_fewer_stalls] entities: t_a, t_b
+    NOT EVALUABLE from single stats file
+  [prefetch_coverage_reduces_demand_misses] entities: C_a, C_b
+    NOT EVALUABLE from single stats file
+  [low_prefetch_accuracy_increases_misses] entities: C_prefetch, C_noprefetch
+    NOT EVALUABLE from single stats file
+  [more_sharing_implies_more_coherence_misses] entities: C_a, C_b, W_a, W_b
+    NOT EVALUABLE from single stats file
+  [more_dirty_lines_more_writebacks] entities: C_a, C_b
+    NOT EVALUABLE from single stats file
+

@@ -535,7 +535,7 @@ ALL_RELATIONS = [
     R14_more_dirty_lines_more_writebacks,
 ]
 
-assert len(ALL_RELATIONS) == 17, f"Expected 17, got {len(ALL_RELATIONS)}"
+assert len(ALL_RELATIONS) == 16, f"Expected 16, got {len(ALL_RELATIONS)}"
 
 
 if __name__ == "__main__":

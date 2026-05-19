@@ -1,0 +1,403 @@
+Experiment Plans for 16 relations
+========================================================================
+
+Multi-entity (need separate gem5 runs): 11
+Single-entity (one stats file suffices): 5
+
+
+========================================================================
+  miss_rate_hit_rate_complement
+========================================================================
+
+Gem5 runs needed: 1
+  C (cache)
+
+Shared (EQ constraints from premises):
+  [none]
+
+Sweep axes (inequality constraints):
+  [none]
+
+Metrics to collect:
+  MISS_RATE from C
+  HIT_RATE from C
+
+Free epsilons: [none — exact relation]
+
+Domain: any cache, any policy, any workload
+
+========================================================================
+  hit_rate_bounded
+========================================================================
+
+Gem5 runs needed: 1
+  C (cache)
+
+Shared (EQ constraints from premises):
+  [none]
+
+Sweep axes (inequality constraints):
+  [none]
+
+Metrics to collect:
+  HIT_RATE from C
+
+Free epsilons: [none — exact relation]
+
+Domain: any cache, any policy, any workload
+
+========================================================================
+  compulsory_misses_policy_independent
+========================================================================
+
+Gem5 runs needed: 2
+  C_a (cache)
+  C_b (cache)
+Bound entities (not separate runs):
+  P_a (policy)
+  P_b (policy)
+
+Bindings:
+  C_a uses P_a
+  C_b uses P_b
+
+Shared (EQ constraints from premises):
+  SIZE: C_a == C_b
+  ASSOCIATIVITY: C_a == C_b
+
+Sweep axes (inequality constraints):
+  [none]
+
+Metrics to collect:
+  COMPULSORY_MISSES from C_a
+  COMPULSORY_MISSES from C_b
+
+Free epsilons: [none — exact relation]
+
+Domain: same workload, same cache geometry, any two policies
+
+========================================================================
+  larger_cache_implies_higher_hit_rate
+========================================================================
+
+Gem5 runs needed: 2
+  LLC_a (cache)
+  LLC_b (cache)
+Bound entities (not separate runs):
+  P (policy)
+
+Bindings:
+  LLC_a uses P
+  LLC_b uses P
+
+Shared (EQ constraints from premises):
+  [none]
+
+Sweep axes (inequality constraints):
+  SIZE: LLC_a >= LLC_b
+
+Metrics to collect:
+  HIT_RATE from LLC_a
+  HIT_RATE from LLC_b
+
+Free epsilons: ε_1 (computed by eval_backend)
+
+Domain: any policy; same workload and assoc
+
+========================================================================
+  diminishing_returns_of_associativity
+========================================================================
+
+Gem5 runs needed: 3
+  LLC_a (cache)
+  LLC_b (cache)
+  LLC_c (cache)
+Bound entities (not separate runs):
+  P (policy)
+
+Bindings:
+  LLC_a uses P
+  LLC_b uses P
+  LLC_c uses P
+
+Shared (EQ constraints from premises):
+  SIZE: LLC_a == LLC_b == LLC_c
+
+Sweep axes (inequality constraints):
+  [none]
+
+Other premise constraints:
+  (2 * ASSOCIATIVITY[cache:LLC_a]) == ASSOCIATIVITY[cache:LLC_b]
+  (2 * ASSOCIATIVITY[cache:LLC_b]) == ASSOCIATIVITY[cache:LLC_c]
+
+Metrics to collect:
+  HIT_RATE from LLC_c
+  HIT_RATE from LLC_b
+  HIT_RATE from LLC_a
+
+Free epsilons: ε_2 (computed by eval_backend)
+
+Domain: any policy, fixed size, single workload
+
+========================================================================
+  opt_upper_bounds_all_policies
+========================================================================
+
+Gem5 runs needed: 2
+  C_opt (cache)
+  C_any (cache)
+Bound entities (not separate runs):
+  OPT (policy)
+  P_any (policy)
+
+Bindings:
+  C_opt uses OPT
+  C_any uses P_any
+
+Shared (EQ constraints from premises):
+  SIZE: C_opt == C_any
+  ASSOCIATIVITY: C_opt == C_any
+
+Sweep axes (inequality constraints):
+  [none]
+
+Metrics to collect:
+  HIT_RATE from C_opt
+  HIT_RATE from C_any
+
+Free epsilons: ε_3 (computed by eval_backend)
+
+Domain: same cache geometry, same workload, demand-fetch only
+
+========================================================================
+  conflict_misses_decrease_with_associativity
+========================================================================
+
+Gem5 runs needed: 2
+  C_hiassoc (cache)
+  C_loassoc (cache)
+
+Shared (EQ constraints from premises):
+  SIZE: C_hiassoc == C_loassoc
+
+Sweep axes (inequality constraints):
+  ASSOCIATIVITY: C_hiassoc >= C_loassoc
+
+Metrics to collect:
+  CONFLICT_MISSES from C_hiassoc
+  CONFLICT_MISSES from C_loassoc
+
+Free epsilons: ε_4 (computed by eval_backend)
+
+Domain: any policy (same for both), same workload
+
+========================================================================
+  hit_rate_implies_fewer_stalls
+========================================================================
+
+Gem5 runs needed: 2
+  t_a (interval)
+  t_b (interval)
+
+Shared (EQ constraints from premises):
+  [none]
+
+Sweep axes (inequality constraints):
+  HIT_RATE: t_a >= t_b
+
+Metrics to collect:
+  STALLS from t_a
+  STALLS from t_b
+
+Free epsilons: ε_5 (computed by eval_backend)
+
+Domain: single-core, same cache geometry, intervals large enough for metric stability
+
+========================================================================
+  critical_hit_rate_implies_fewer_stalls
+========================================================================
+
+Gem5 runs needed: 2
+  t_a (interval)
+  t_b (interval)
+
+Shared (EQ constraints from premises):
+  [none]
+
+Sweep axes (inequality constraints):
+  CRITICAL_HIT_RATE: t_a >= t_b
+
+Metrics to collect:
+  STALLS from t_a
+  STALLS from t_b
+
+Free epsilons: ε_6 (computed by eval_backend)
+
+Domain: single-core, same cache geometry, intervals large enough for metric stability
+
+========================================================================
+  hit_rate_between_load_and_store
+========================================================================
+
+Gem5 runs needed: 1
+  C (cache)
+
+Shared (EQ constraints from premises):
+  [none]
+
+Sweep axes (inequality constraints):
+  [none]
+
+Other premise constraints:
+  LOAD_HIT_RATE[cache:C] >= STORE_HIT_RATE[cache:C]
+
+Metrics to collect:
+  HIT_RATE from C
+  STORE_HIT_RATE from C
+
+Free epsilons: [none — exact relation]
+
+Domain: any policy, any workload with both loads and stores
+
+========================================================================
+  prefetch_coverage_reduces_demand_misses
+========================================================================
+
+Gem5 runs needed: 2
+  C_a (cache)
+  C_b (cache)
+
+Shared (EQ constraints from premises):
+  SIZE: C_a == C_b
+  ASSOCIATIVITY: C_a == C_b
+
+Sweep axes (inequality constraints):
+  PREFETCH_COVERAGE: C_a >= C_b
+
+Metrics to collect:
+  DEMAND_HIT_RATE from C_a
+  DEMAND_HIT_RATE from C_b
+
+Free epsilons: ε_9 (computed by eval_backend)
+
+Domain: same geometry, same workload, same replacement policy
+
+========================================================================
+  low_prefetch_accuracy_increases_misses
+========================================================================
+
+Gem5 runs needed: 2
+  C_prefetch (cache)
+  C_noprefetch (cache)
+
+Shared (EQ constraints from premises):
+  SIZE: C_prefetch == C_noprefetch
+  ASSOCIATIVITY: C_prefetch == C_noprefetch
+
+Sweep axes (inequality constraints):
+  [none]
+
+Other premise constraints:
+  PREFETCH_ACCURACY[cache:C_prefetch] <= 0.25
+
+Metrics to collect:
+  DEMAND_HIT_RATE from C_prefetch
+  DEMAND_HIT_RATE from C_noprefetch
+
+Free epsilons: ε_10 (computed by eval_backend)
+
+Domain: same geometry, same workload, same replacement policy
+
+========================================================================
+  stores_hit_less_than_loads
+========================================================================
+
+Gem5 runs needed: 1
+  C (cache)
+
+Shared (EQ constraints from premises):
+  [none]
+
+Sweep axes (inequality constraints):
+  [none]
+
+Metrics to collect:
+  STORE_HIT_RATE from C
+  LOAD_HIT_RATE from C
+
+Free epsilons: ε_11 (computed by eval_backend)
+
+Domain: write-allocate cache, any policy
+
+========================================================================
+  four_c_miss_decomposition
+========================================================================
+
+Gem5 runs needed: 1
+  C (cache)
+
+Shared (EQ constraints from premises):
+  [none]
+
+Sweep axes (inequality constraints):
+  [none]
+
+Metrics to collect:
+  MISS_COUNT from C
+  CAPACITY_MISSES from C
+  CONFLICT_MISSES from C
+  COMPULSORY_MISSES from C
+  COHERENCE_MISSES from C
+
+Free epsilons: ε_12 (computed by eval_backend)
+
+Domain: multicore with coherence protocol
+
+========================================================================
+  more_sharing_implies_more_coherence_misses
+========================================================================
+
+Gem5 runs needed: 2
+  C_a (cache)
+  C_b (cache)
+Bound entities (not separate runs):
+  W_a (workload)
+  W_b (workload)
+
+Shared (EQ constraints from premises):
+  SIZE: C_a == C_b
+  ASSOCIATIVITY: C_a == C_b
+
+Sweep axes (inequality constraints):
+  INVALIDATIONS: C_a >= C_b
+
+Metrics to collect:
+  COHERENCE_MISSES from C_a
+  COHERENCE_MISSES from C_b
+
+Free epsilons: ε_13 (computed by eval_backend)
+
+Domain: same geometry, multicore
+
+========================================================================
+  more_dirty_lines_more_writebacks
+========================================================================
+
+Gem5 runs needed: 2
+  C_a (cache)
+  C_b (cache)
+
+Shared (EQ constraints from premises):
+  SIZE: C_a == C_b
+
+Sweep axes (inequality constraints):
+  STORE_HIT_RATE: C_a >= C_b
+  EVICTIONS: C_a >= C_b
+
+Metrics to collect:
+  WRITEBACKS from C_a
+  WRITEBACKS from C_b
+
+Free epsilons: ε_14 (computed by eval_backend)
+
+Domain: write-back cache, same geometry
