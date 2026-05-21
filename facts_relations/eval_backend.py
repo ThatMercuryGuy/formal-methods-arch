@@ -14,14 +14,13 @@ Given a gem5 stats.txt file and one or more entity bindings, this module:
 3. Walks the Relation's expression AST, substituting concrete values.
 4. Reports whether the relation holds, is violated, or can't be evaluated.
 
-For relations with free epsilons, the key output is the **empirical epsilon
-bound** — the value of ε that makes the consequent exactly true for this data.
-  - Negative: relation holds with that much margin.
-  - Zero: holds exactly at the boundary.
-  - Positive: violated by that amount.
+For relations with free epsilons, the key output is the **empirical epsilon** —
+the minimum ε needed to make the relation true for this data.
+  - Zero: relation already holds without any tolerance.
+  - Positive: relation would not hold without this much epsilon.
 
 Relations without free epsilons (exact/definitional facts like F1, F2) just
-report True/False — there is no bound to compute.
+report True/False — there is no epsilon to compute.
 
 ================================================================================
 EVALUATION MODES
@@ -92,7 +91,7 @@ Multi-entity evaluation (comparing two LLC configs):
         EntityBinding("P", stats_big, "board.cache_hierarchy.llcache"),
     ]
     result = evaluate_relation(R1_larger_cache_higher_hr, bindings)
-    # result.slack["1"] gives the empirical epsilon bound
+    # result.epsilon["1"] gives the minimum epsilon needed (0 if relation holds)
 
 Running as a script:
 
@@ -109,14 +108,14 @@ EvalResult fields:
     relation_name    — which relation was evaluated
     premises_hold    — True/False/None (None = couldn't check)
     consequent_holds — True/False/None
-    slack            — {epsilon_name: float} for relations with free epsilons.
-                       Sign convention: negative = holds, positive = violated.
+    epsilon          — {epsilon_name: float} for relations with free epsilons.
+                       0 = holds as-is, positive = minimum epsilon to make it true.
                        None for exact relations (no epsilon to solve for).
     missing_metrics  — list of what couldn't be resolved
 
 EvalResult statuses:
-    HOLDS                      — consequent satisfied (slack <= 0 if epsilons)
-    VIOLATED                   — consequent broken (slack > 0)
+    HOLDS                      — consequent satisfied (epsilon = 0)
+    VIOLATED                   — consequent needs nonzero epsilon to hold
     VACUOUS (premises not met) — premises false, relation doesn't apply to this data
     UNEVALUABLE                — missing metrics or entity bindings
 """
@@ -317,36 +316,38 @@ def eval_expr(
 
     Returns None if any metric can't be resolved.
     """
-    match expr:
-        case Literal(value=v):
-            return v
+    if isinstance(expr, Literal):
+        return expr.value
 
-        case MetricRef(metric=m):
-            ent_name = m.entity.name
-            binding = bindings.get(ent_name)
-            if binding is None:
-                return None
-            return resolve_metric(m.kind, binding.stats, binding.component_prefix, binding.config)
+    elif isinstance(expr, MetricRef):
+        ent_name = expr.metric.entity.name
+        binding = bindings.get(ent_name)
+        if binding is None:
+            return None
+        return resolve_metric(expr.metric.kind, binding.stats, binding.component_prefix, binding.config)
 
-        case Epsilon(name=n):
-            if epsilon_values and n in epsilon_values:
-                return epsilon_values[n]
-            return 0.0
+    elif isinstance(expr, Epsilon):
+        if epsilon_values and expr.name in epsilon_values:
+            return epsilon_values[expr.name]
+        return 0.0
 
-        case BinOp(op=op, left=left, right=right):
-            l = eval_expr(left, bindings, epsilon_values)
-            r = eval_expr(right, bindings, epsilon_values)
-            if l is None or r is None:
-                return None
-            match op:
-                case Op.ADD: return l + r
-                case Op.SUB: return l - r
-                case Op.MUL: return l * r
-                case Op.DIV: return l / r if r != 0 else None
+    elif isinstance(expr, BinOp):
+        l = eval_expr(expr.left, bindings, epsilon_values)
+        r = eval_expr(expr.right, bindings, epsilon_values)
+        if l is None or r is None:
+            return None
+        if expr.op == Op.ADD:
+            return l + r
+        elif expr.op == Op.SUB:
+            return l - r
+        elif expr.op == Op.MUL:
+            return l * r
+        elif expr.op == Op.DIV:
+            return l / r if r != 0 else None
 
-        case UnaryOp(op=Op.NEG, operand=operand):
-            v = eval_expr(operand, bindings, epsilon_values)
-            return -v if v is not None else None
+    elif isinstance(expr, UnaryOp) and expr.op == Op.NEG:
+        v = eval_expr(expr.operand, bindings, epsilon_values)
+        return -v if v is not None else None
 
     return None
 
@@ -361,13 +362,18 @@ def eval_constraint(
     rhs = eval_expr(c.rhs, bindings, epsilon_values)
     if lhs is None or rhs is None:
         return None
-    match c.op:
-        case CmpOp.GE: return lhs >= rhs
-        case CmpOp.GT: return lhs > rhs
-        case CmpOp.LE: return lhs <= rhs
-        case CmpOp.LT: return lhs < rhs
-        case CmpOp.EQ: return abs(lhs - rhs) < 1e-9
-        case CmpOp.NE: return abs(lhs - rhs) >= 1e-9
+    if c.op == CmpOp.GE:
+        return lhs >= rhs
+    elif c.op == CmpOp.GT:
+        return lhs > rhs
+    elif c.op == CmpOp.LE:
+        return lhs <= rhs
+    elif c.op == CmpOp.LT:
+        return lhs < rhs
+    elif c.op == CmpOp.EQ:
+        return abs(lhs - rhs) < 1e-9
+    elif c.op == CmpOp.NE:
+        return abs(lhs - rhs) >= 1e-9
     return None
 
 
@@ -377,36 +383,33 @@ def eval_premise(
     epsilon_values: dict[str, float] | None = None,
 ) -> bool | None:
     """Evaluate a premise (Constraint, Conjunction, or Disjunction)."""
-    match p:
-        case Constraint() as c:
-            return eval_constraint(c, bindings, epsilon_values)
-        case Conjunction(constraints=cs):
-            results = [eval_constraint(c, bindings, epsilon_values) for c in cs]
-            if None in results:
-                return None
-            return all(results)
-        case Disjunction(constraints=cs):
-            results = [eval_constraint(c, bindings, epsilon_values) for c in cs]
-            if None in results:
-                return None
-            return any(results)
+    if isinstance(p, Constraint):
+        return eval_constraint(p, bindings, epsilon_values)
+    elif isinstance(p, Conjunction):
+        results = [eval_constraint(c, bindings, epsilon_values) for c in p.constraints]
+        if None in results:
+            return None
+        return all(results)
+    elif isinstance(p, Disjunction):
+        results = [eval_constraint(c, bindings, epsilon_values) for c in p.constraints]
+        if None in results:
+            return None
+        return any(results)
     return None
 
 
 # =============================================================================
-# SLACK COMPUTATION
+# EPSILON COMPUTATION
 # =============================================================================
 
-def compute_slack(
+def compute_epsilon(
     consequent: Constraint,
     bindings: dict[str, EntityBinding],
     free_epsilons: list[str],
 ) -> dict[str, float] | None:
-    """Compute empirical slack for each free epsilon.
+    """Compute the minimum epsilon needed to make the consequent true.
 
-    For a constraint like `lhs <= rhs + ε`, slack = lhs - rhs.
-    Positive slack means the relation is violated by that amount.
-    Negative slack means the relation holds with margin.
+    Returns 0 if the relation already holds, positive if it needs tolerance.
 
     For constraints with a single epsilon, we solve directly.
     For multiple epsilons we report the total residual under the first epsilon.
@@ -420,23 +423,17 @@ def compute_slack(
     if lhs_val is None or rhs_val is None:
         return None
 
-    match consequent.op:
-        case CmpOp.LE:
-            # lhs <= rhs + ε  →  ε >= lhs - rhs
-            residual = lhs_val - rhs_val
-        case CmpOp.GE:
-            # lhs >= rhs - ε  →  ε >= rhs - lhs
-            # lhs >= rhs + ε  →  ε <= lhs - rhs (epsilon tightens the bound)
-            residual = rhs_val - lhs_val
-        case CmpOp.EQ:
-            residual = abs(lhs_val - rhs_val)
-        case _:
-            residual = lhs_val - rhs_val
+    if consequent.op == CmpOp.LE:
+        residual = lhs_val - rhs_val
+    elif consequent.op == CmpOp.GE:
+        residual = rhs_val - lhs_val
+    elif consequent.op == CmpOp.EQ:
+        residual = abs(lhs_val - rhs_val)
+    else:
+        residual = lhs_val - rhs_val
 
-    # Assign all residual to the first epsilon (single-epsilon relations
-    # are the common case; multi-epsilon needs the Z3 backend for proper decomposition)
     result = {}
-    result[free_epsilons[0]] = residual
+    result[free_epsilons[0]] = max(0.0, residual)
     for e in free_epsilons[1:]:
         result[e] = 0.0
     return result
@@ -461,15 +458,14 @@ def compute_residual(
     if lhs_val is None or rhs_val is None:
         return None
 
-    match consequent.op:
-        case CmpOp.LE | CmpOp.LT:
-            return lhs_val - rhs_val
-        case CmpOp.GE | CmpOp.GT:
-            return rhs_val - lhs_val
-        case CmpOp.EQ:
-            return abs(lhs_val - rhs_val)
-        case CmpOp.NE:
-            return -abs(lhs_val - rhs_val)
+    if consequent.op in (CmpOp.LE, CmpOp.LT):
+        return lhs_val - rhs_val
+    elif consequent.op in (CmpOp.GE, CmpOp.GT):
+        return rhs_val - lhs_val
+    elif consequent.op == CmpOp.EQ:
+        return abs(lhs_val - rhs_val)
+    elif consequent.op == CmpOp.NE:
+        return -abs(lhs_val - rhs_val)
     return None
 
 
@@ -483,7 +479,7 @@ class EvalResult:
     relation_name: str
     premises_hold: bool | None
     consequent_holds: bool | None
-    slack: dict[str, float] | None
+    epsilon: dict[str, float] | None
     missing_metrics: list[str] = field(default_factory=list)
 
     def __repr__(self):
@@ -496,8 +492,8 @@ class EvalResult:
         else:
             status = "UNEVALUABLE"
         parts = [f"[{self.relation_name}] {status}"]
-        if self.slack:
-            for name, val in self.slack.items():
+        if self.epsilon:
+            for name, val in self.epsilon.items():
                 parts.append(f"  ε_{name} = {val:.6f}")
         if self.missing_metrics:
             parts.append(f"  missing: {', '.join(self.missing_metrics)}")
@@ -548,7 +544,7 @@ def evaluate_relation(
             relation_name=relation.name,
             premises_hold=None,
             consequent_holds=None,
-            slack=None,
+            epsilon=None,
             missing_metrics=missing,
         )
 
@@ -558,7 +554,7 @@ def evaluate_relation(
             relation_name=relation.name,
             premises_hold=None,
             consequent_holds=None,
-            slack=None,
+            epsilon=None,
             missing_metrics=["degenerate: all entities bound to same data (need separate runs)"],
         )
 
@@ -580,39 +576,36 @@ def evaluate_relation(
             relation_name=relation.name,
             premises_hold=False,
             consequent_holds=None,
-            slack=None,
+            epsilon=None,
         )
 
     # Evaluate consequent
     free_eps_names = [e.name for e in relation.free_epsilons]
 
     if free_eps_names:
-        # Slack mode: compute empirical epsilon
-        slack = compute_slack(relation.consequent, bindings_dict, free_eps_names)
-        if slack is None:
+        eps = compute_epsilon(relation.consequent, bindings_dict, free_eps_names)
+        if eps is None:
             return EvalResult(
                 relation_name=relation.name,
                 premises_hold=premises_hold,
                 consequent_holds=None,
-                slack=None,
+                epsilon=None,
                 missing_metrics=["could not resolve consequent metrics"],
             )
-        # Relation holds if all slacks are <= 0 (no violation)
-        holds = all(v <= 1e-9 for v in slack.values())
+        holds = all(v <= 1e-9 for v in eps.values())
         return EvalResult(
             relation_name=relation.name,
             premises_hold=premises_hold,
             consequent_holds=holds,
-            slack=slack,
+            epsilon=eps,
         )
     else:
-        # Exact relation (no free epsilons): just True/False
         holds = eval_constraint(relation.consequent, bindings_dict)
         return EvalResult(
             relation_name=relation.name,
             premises_hold=premises_hold,
             consequent_holds=holds,
-            slack=None,
+            epsilon=None,
             missing_metrics=["could not resolve consequent metrics"] if holds is None else [],
         )
 

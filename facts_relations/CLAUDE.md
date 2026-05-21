@@ -30,7 +30,7 @@ No third-party dependencies. Z3 backend (planned) will require `z3-solver`. Samp
 
 **`corpus.py`** — 16 relations organized in groups A–G, using the builder DSL. `ALL_RELATIONS` list at the bottom is the canonical collection. The `assert len(ALL_RELATIONS) == 16` guard at the bottom must be updated when adding/removing relations.
 
-**`eval_backend.py`** — Evaluates relations against gem5 stats dumps. Parses stats files, resolves MetricKinds to gem5 stat formulas (with fallbacks like hits = accesses - misses), walks the AST. For relations with free epsilons, computes the empirical epsilon bound (negative = holds with margin, positive = violated by that amount). Exact relations (no epsilon) just report True/False. Single-entity relations evaluate from one stats file; multi-entity relations require separate simulation runs bound via `EntityBinding`. Outputs to `eval_results.txt`.
+**`eval_backend.py`** — Evaluates relations against gem5 stats dumps. Parses stats files, resolves MetricKinds to gem5 stat formulas (with fallbacks like hits = accesses - misses), walks the AST. For relations with free epsilons, computes the minimum epsilon needed to make the relation true (0 = already holds, positive = needs that much tolerance). Exact relations (no epsilon) just report True/False. Single-entity relations evaluate from one stats file; multi-entity relations require separate simulation runs bound via `EntityBinding`. Outputs to `eval_results.txt`.
 
 **`experiment_gen.py`** — Extracts structured experiment plans from relations by walking the AST. For each relation, reports: how many gem5 runs are needed, which parameters are shared (from EQ premises), which form sweep axes (from inequality premises), complex constraints (ratio relationships, literal thresholds) printed as-is, and which metrics to collect from each run. Does not generate concrete parameter values or gem5 configs — the user decides what to simulate. Outputs to `experiment_plans.txt`.
 
@@ -41,8 +41,8 @@ No third-party dependencies. Z3 backend (planned) will require `z3-solver`. Samp
 ## Key Design Constraints
 
 - All AST types are **frozen dataclasses** — never mutate, always construct new instances.
-- `Expr` is a union type (`Union[Literal, MetricRef, BinOp, UnaryOp, Epsilon]`). Backends should use `match` (Python 3.10+) for exhaustive dispatch.
-- Epsilons are first-class AST nodes, not float constants. Each backend interprets them differently (Z3: existential variable to minimize; eval: computed slack; experiment-gen: signals approximate relation).
+- `Expr` is a union type (`Union[Literal, MetricRef, BinOp, UnaryOp, Epsilon]`). Backends use `isinstance` dispatch (Python 3.8 compatible).
+- Epsilons are first-class AST nodes, not float constants. Each backend interprets them differently (Z3: existential variable to minimize; eval: minimum epsilon needed to make relation true, 0 if it already holds; experiment-gen: signals approximate relation).
 - Entity `kind` field (`"cache"`, `"policy"`, `"workload"`, `"interval"`) determines which gem5 subsystem the experiment generator maps it to.
 - `bindings` on a Relation pair entities (e.g., cache→policy) without polluting the AST with fake binding metrics.
 
