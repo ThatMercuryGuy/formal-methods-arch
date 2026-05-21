@@ -430,7 +430,7 @@ R12_4c_decomposition = relation(
     consequent=constraint(
         metric(M.MISS_COUNT, C_r12),
         CmpOp.GE,
-        sub(
+        add(
             add(
                 add(metric(M.CAPACITY_MISSES, C_r12), metric(M.CONFLICT_MISSES, C_r12)),
                 add(metric(M.COMPULSORY_MISSES, C_r12), metric(M.COHERENCE_MISSES, C_r12))

@@ -28,98 +28,40 @@ The combined slack $f(\varepsilon_3, \varepsilon_1, \varepsilon_{\text{ipc}})$ d
 
 ---
 
-## 2. Prefetch Pollution Coupling
+## 2. The Coherence Stall Chain (Invalidations → Coherence Misses → Hit Rate → Stalls → IPC)
 
-Prefetch coverage helps demand hit rate, but demand hit rate's relationship to stalls depends on whether the prefetcher also pollutes the cache.
+The multicore analog of the Miss Cost Chain. In a shared-memory system, coherence protocol traffic introduces a category of misses invisible to single-core analysis. This chain traces how inter-core communication degrades IPC through the cache miss path.
 
-**Relation A (R28):** Better prefetch coverage improves demand hit rate.
+**Link 1 (R13):** More invalidations cause more coherence misses.
 
-$$\text{PrefetchCoverage}[C_a] \geq \text{PrefetchCoverage}[C_b] \implies \text{DemandHitRate}[C_a] \geq \text{DemandHitRate}[C_b] - \varepsilon_{28}$$
+$$\text{Invalidations}[C_a] \geq \text{Invalidations}[C_b] \implies \text{CoherenceMisses}[C_a] \geq \text{CoherenceMisses}[C_b] - \varepsilon_{13}$$
 
-**Relation B (R1 applied to demand):** Higher demand hit rate reduces stalls.
+**Link 2 (R12):** Coherence misses contribute to total miss count.
 
-$$\text{DemandHitRate}[t_a] \geq \text{DemandHitRate}[t_b] \implies \text{Stalls}[t_a] \leq \text{Stalls}[t_b] + \varepsilon_1'$$
+$$\text{MissCount}[C] \geq \text{CompulsoryMisses}[C] + \text{CapacityMisses}[C] + \text{ConflictMisses}[C] + \text{CoherenceMisses}[C] + \varepsilon_{12}$$
 
-**Coupling mechanism:** A prefetcher that achieves high coverage by aggressively filling the cache may evict demand-critical lines, inflating $\varepsilon_1'$ (the remaining misses become more critical-path because the easy ones were prefetched but the hard ones now also miss due to pollution). Formally:
+**Link 3 (F1):** Total misses determine hit rate.
 
-$$\varepsilon_1' = g(\varepsilon_{28}, \text{PrefetchAccuracy})$$
+$$\text{MissRate}[C] + \text{HitRate}[C] = 1$$
 
-When accuracy is low, pollution is high, and the stalls-per-miss-rate relationship degrades. You cannot tighten $\varepsilon_{28}$ (claim coverage helps a lot) without also accounting for how pollution worsens $\varepsilon_1'$.
+**Link 4 (R5):** Lower hit rate causes more stalls.
 
----
+$$\text{HitRate}[t_a] \geq \text{HitRate}[t_b] \implies \text{Stalls}[t_a] \leq \text{Stalls}[t_b] + \varepsilon_5$$
 
-## 3. Coherence–Capacity Interaction
+**System constraint (end-to-end):** More invalidations → worse IPC.
 
-Coherence invalidations effectively shrink usable cache capacity, shifting the system closer to the capacity cliff.
+$$\text{Invalidations}[C_a] \geq \text{Invalidations}[C_b] \implies \text{IPC}[t_a] \leq \text{IPC}[t_b] + g(\varepsilon_{13}, \varepsilon_{12}, \varepsilon_5)$$
 
-**Relation A (R36):** More invalidations → more coherence misses.
-
-$$\text{Invalidations}[C_a] \geq \text{Invalidations}[C_b] \implies \text{CoherenceMisses}[C_a] \geq \text{CoherenceMisses}[C_b] - \varepsilon_{36}$$
-
-**Relation B (R15):** Working set crossing capacity boundary → miss rate cliff.
-
-$$\text{WSS}[W] > \frac{\text{Size}[C]}{B} \implies \text{MissRate}[C] \geq 2 \cdot \text{MissRate}[C_{\text{under}}] - \varepsilon_{15}$$
-
-**Coupling mechanism:** Invalidations destroy valid lines that would otherwise serve future demand hits. This reduces the *effective* capacity of the cache:
-
-$$\text{EffectiveCapacity}[C] \approx \text{Size}[C] - \text{Invalidations}[C] \cdot B \cdot \varepsilon_{\text{refill}}$$
-
-where $\varepsilon_{\text{refill}}$ captures how quickly invalidated lines get refilled with useful data. The capacity cliff (R15) fires relative to effective capacity, not physical capacity. So:
-
-$$\varepsilon_{15} = h(\varepsilon_{36}, \text{InvalidationRate})$$
-
-High invalidation rates (small $\varepsilon_{36}$, meaning invalidations reliably cause coherence misses) push the effective capacity down, making $\varepsilon_{15}$ smaller (the cliff is steeper because you're deeper past the effective boundary).
+The combined slack $g(\varepsilon_{13}, \varepsilon_{12}, \varepsilon_5)$ cannot be decomposed into independent per-link contributions. $\varepsilon_{13}$ is loose when invalidations hit lines that were about to be evicted anyway — the coherence miss overlaps with what would have been a capacity miss, so the re-fetch is not an additional cost. $\varepsilon_5$ is loose when out-of-order execution hides miss latency via memory-level parallelism. These interact in a non-trivial way: bursty invalidations (tight $\varepsilon_{13}$ within each burst) create bursty stall patterns that the reorder buffer can absorb (loosening $\varepsilon_5$). Conversely, a steady drip of invalidations (loose $\varepsilon_{13}$ per individual event) produces a sustained throughput drag with predictable stall patterns (tightening $\varepsilon_5$). Tightening one epsilon can loosen another — they cannot be solved independently.
 
 ---
 
-## 4. Diminishing Returns ↔ Conflict Miss Reduction
+## Entity Legend
 
-Two relations measuring the same physical phenomenon from different abstraction levels.
-
-**Relation A (R4):** Hit rate gain from doubling associativity is concave.
-
-$$(\text{HitRate}[C_c] - \text{HitRate}[C_b]) \leq (\text{HitRate}[C_b] - \text{HitRate}[C_a]) + \varepsilon_{12}$$
-
-where $2\,\text{Assoc}[C_a] = \text{Assoc}[C_b]$ and $2\,\text{Assoc}[C_b] = \text{Assoc}[C_c]$.
-
-**Relation B (R22):** Conflict misses decrease with associativity.
-
-$$\text{Assoc}[C_{\text{hi}}] \geq \text{Assoc}[C_{\text{lo}}] \implies \text{ConflictMisses}[C_{\text{hi}}] \leq \text{ConflictMisses}[C_{\text{lo}}] + \varepsilon_{22}$$
-
-**Coupling mechanism:** The *reason* hit rate gains diminish (R4) is that conflict misses decrease concavely (R22). Hit rate improvement from higher associativity comes almost entirely from eliminating conflict misses. Therefore:
-
-$$\varepsilon_{12} \approx \varepsilon_{22} \cdot \frac{\text{ConflictMisses}}{\text{Accesses}}$$
-
-If you measure $\varepsilon_{22}$ (how much conflict misses drop), you can derive $\varepsilon_{12}$ (how much hit rate improves) by scaling by the conflict fraction. Solving them as a system lets you verify internal consistency: if the measured $\varepsilon_{12}$ is tighter than what $\varepsilon_{22}$ would predict, something else (beyond conflict elimination) is contributing to hit rate improvement at higher associativity.
-
----
-
-## 5. Critical Hit Rate as a Tighter Stall Predictor
-
-The original hypothesis from the corpus: $\varepsilon_2 < \varepsilon_1$.
-
-**Relation A (R1):** Overall hit rate predicts stalls.
-
-$$\text{HitRate}[t_a] \geq \text{HitRate}[t_b] \implies \text{Stalls}[t_a] \leq \text{Stalls}[t_b] + \varepsilon_1$$
-
-**Relation B (R2):** Critical hit rate predicts stalls (tighter).
-
-$$\text{CriticalHitRate}[t_a] \geq \text{CriticalHitRate}[t_b] \implies \text{Stalls}[t_a] \leq \text{Stalls}[t_b] + \varepsilon_2$$
-
-**System constraint:**
-
-$$\varepsilon_2 \leq \varepsilon_1$$
-
-This is a **meta-relation** — a claim about the relative tightness of two bounds. You cannot verify it by evaluating R1 and R2 independently on separate data; you must evaluate *both* on the *same* intervals and compare their slacks. The coupled question is: "given a set of interval pairs, is the empirical $\varepsilon_2$ distribution stochastically dominated by the $\varepsilon_1$ distribution?"
-
----
-
-## Summary
-
-| System | Relations Involved | Shared/Coupled Latent | Nature |
-|--------|-------------------|----------------------|--------|
-| Miss cost chain | R3 → R1 → IPC | $\varepsilon_3, \varepsilon_1, \varepsilon_{\text{ipc}}$ | Transitive chain |
-| Prefetch pollution | R28 → R1' | $\varepsilon_{28}, \varepsilon_1'$ | Interference coupling |
-| Coherence–capacity | R36 ↔ R15 | $\varepsilon_{36}, \varepsilon_{15}$ | Effective capacity reduction |
-| Assoc dual view | R4 ↔ R22 | $\varepsilon_{12}, \varepsilon_{22}$ | Same phenomenon, different level |
-| Critical tightness | R1 vs R2 | $\varepsilon_1, \varepsilon_2$ | Meta-relation (bound ordering) |
+| Symbol | Name | Description |
+|--------|------|-------------|
+| $C$    | Cache | A cache instance |
+| $C_a$  | Cache A | A cache instance at a given level (e.g., L2, LLC) in the hierarchy |
+| $C_b$  | Cache B | A second cache instance at the same level as $C_a$ |
+| $t_a$  | Interval A | A large program execution interval |
+| $t_b$  | Interval B | A second large program execution interval |

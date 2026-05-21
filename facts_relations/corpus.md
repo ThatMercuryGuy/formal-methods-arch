@@ -133,7 +133,7 @@ Domain: write-allocate cache, any policy.
 
 Total misses decompose into compulsory + capacity + conflict + coherence (the fourth C for multicore).
 
-$$\text{MissCount}[C] \geq \text{CompulsoryMisses}[C] + \text{CapacityMisses}[C] + \text{ConflictMisses}[C] + \text{CoherenceMisses}[C] - \varepsilon_{12}$$
+$$\text{MissCount}[C] \geq \text{CompulsoryMisses}[C] + \text{CapacityMisses}[C] + \text{ConflictMisses}[C] + \text{CoherenceMisses}[C] + \varepsilon_{12}$$
 
 Domain: multicore with coherence protocol.
 
