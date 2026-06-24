@@ -30,7 +30,9 @@ question with a standard solver (no optimizer):
 
 > Does there exist a legal workload such that `T_HighMLP > T_LowMLP`?
 
-If the answer is **SAT**, Z3 hands back the exact adversarial workload.
+If the answer is **SAT**, Z3 hands back the exact adversarial workload — and the
+engine then keeps searching for the workload that **maximizes** the slowdown
+(see *Finding the worst case* below).
 
 ### What Z3 gets to choose (the symbolic workload)
 - `A[i]` — program-order arrival time of each request.
@@ -48,27 +50,49 @@ If the answer is **SAT**, Z3 hands back the exact adversarial workload.
 ### The hardware axioms (applied identically to both machines)
 1. **Causality** — a dependent request waits for its producer to retire;
    otherwise it respects program order.
-2. **MSHR gating** — a request cannot present to the bus until an
+2. **MSHR gating** — a request cannot present to the channel until an
    outstanding-miss slot frees up: `A'[j] = max(Aeff[j], E[j-W])`.
-3. **FIFO serialization + contention** — single in-order bus channel,
-   `E[j] = St[j] + B + PEN * overlap[j]`.
+3. **Finite-bandwidth channel + bank conflicts** — the channel admits a request
+   every `G` cycles (`G < B`, so requests overlap in flight):
+   `St[j] = max(A'[j], St[j-1] + G)`. A same-bank request still in flight when
+   `j` starts costs a row-cycle penalty: `E[j] = St[j] + B + TRC * conflicts[j]`,
+   where `conflicts[j] = #{ i<j : Bk[i]==Bk[j] && E[i] > St[j] }`.
 4. **Timeline** — total cycles `T = max(E)`.
 
-## Why high-MLP can lose: contention
+## Why high-MLP can lose: bank contention
 
-The key physics is in Axiom 3. A wider MSHR window lets more *independent*
-sibling misses sit on the shared DRAM channel at once. That concurrency is not
-free — bank conflicts and arbitration add a penalty (`PEN` cycles) per
-overlapping sibling. The low-MLP machine, by issuing fewer misses at a time,
-sidesteps this contention.
+The key physics is in Axiom 3, and it is modeled the way real hardware behaves —
+not as a bookkeeping tax. The memory channel has **finite bandwidth** (one
+admission every `G` cycles), so a wide MSHR window genuinely puts more requests
+*in flight at the same time*. When two of those in-flight requests hit the **same
+DRAM bank**, the bank cannot serve both open rows at once and pays a row-cycle
+penalty (`TRC`). The low-MLP machine issues fewer misses at a time, so fewer
+same-bank requests are ever co-resident — it sidesteps the conflicts.
 
-So there is a genuine trade-off: high-MLP presents requests to the bus *earlier*
-but pays *more contention*. The dogma holds only when the first effect wins.
-Z3's job is to find a workload where the second effect wins instead.
+So there is a genuine trade-off: high-MLP presents requests *earlier* but, by
+crowding the banks, pays *more conflicts*. The dogma holds only when the first
+effect wins. Z3's job is to find a workload where the second effect wins instead.
 
-(Without this contention term the model is monotone in `W` — more MLP could only
-ever help — and the search would be vacuously UNSAT. The contention is identical
-physics for both machines; only the window `W` differs.)
+(Contention arises from **genuine in-flight overlap** on the modeled timeline
+(`E[i] > St[j]`), not from counting an issue window. Without a bandwidth-limited
+channel the model is monotone in `W` — more MLP could only ever help — and the
+search would be vacuously UNSAT. The physics is identical for both machines; only
+the window `W` differs.)
+
+## Finding the worst case
+
+A single counterexample only proves the dogma is *false*; it says nothing about
+*how* false. So once the discovery query is SAT, the engine searches for the
+workload that **maximizes** the deviation `Delta = T_HighMLP - T_LowMLP`.
+
+This is done **without `z3::optimize`** (a deliberate design constraint), by
+incrementally tightening the standard solver: remember the best model, assert
+`Delta >= best + 1`, and re-solve. A SAT result is a strictly worse workload (we
+adopt it and raise the floor); the first UNSAT proves the previous `Delta` was
+the maximum achievable within the bounds. Each solve inherits the solver timeout
+(60 s by default, overridable via the CLI argument), so if the final (hardest)
+probe times out, the engine reports the best `Delta` found as a lower bound
+rather than a proven maximum.
 
 ## Building and running
 
@@ -76,23 +100,40 @@ Requirements: a C++23 compiler and Z3 (with `z3++.h` / `libz3`).
 
 ```sh
 g++ -std=c++23 mlp.cpp -lz3 -o mlp -Ofast -march=native
-./mlp
+./mlp            # default 60 s solver timeout
+./mlp 120        # raise the solver timeout to 120 s
+./mlp 0          # no timeout (run the maximality probe to completion)
 ```
+
+The optional first argument sets the solver timeout in **seconds** (default 60,
+`0` = unlimited). It bounds both the discovery query and each maximization probe,
+so a larger value lets the worst-case search push `Delta` further before giving
+up.
 
 ## Example result (6 vs 2 MSHRs)
 
 ```
 Query: exists workload with  T_HighMLP > T_LowMLP ?
 
-SAT -- discovered a workload where High-MLP is SLOWER.
-...
-Conclusion: T_HighMLP = 159  >  T_LowMLP = 116   (delta = 43 cycles)
+SAT at delta = 1 cycles; maximizing...
+  found larger delta = 3 cycles
+  ...
+  found larger delta = 21 cycles
+  stopped (solver gave up proving a larger delta: canceled); reporting best found.
+
+Conclusion: T_HighMLP = 85  >  T_LowMLP = 64   (delta = 21 cycles)
 More memory-level parallelism made this workload SLOWER.
 ```
 
-Z3 autonomously discovered a dependency graph and stream layout where the
-6-MSHR core takes **159 cycles** and the 2-MSHR core takes **116** — a 43-cycle
-penalty for having *more* parallelism. The dogma is false in general.
+Z3 first finds a workload with a 1-cycle slowdown, then drives it up to a
+**21-cycle** worst case (6-MSHR core: **85 cycles**, 2-MSHR core: **64**) before
+the final maximality probe hits the 60 s timeout — so 21 is a timeout-limited
+lower bound on the worst case here. The slowdown comes from same-bank access
+bursts the deep MSHR file pulls into concurrent flight, paying row-cycle
+conflicts the throttled core spaces out and avoids. With a faithful
+finite-bandwidth channel the effect is real but bounded — a genuine break-even,
+not the inflated artifact an unbounded contention tax would produce. The dogma is
+false in general.
 
 ## Configuration
 
@@ -102,10 +143,12 @@ All parameters live in `namespace cfg` at the top of `mlp.cpp`:
 |------------------|-------------------------------------------|---------|
 | `N`              | unroll depth (number of requests)         | 8       |
 | `S`              | streams / hardware threads                | 2       |
-| `B`              | fixed bus latency per access (cycles)     | 10      |
+| `B`              | bank service latency per access (cycles)  | 10      |
 | `ROB_SIZE`       | reorder-buffer dependency horizon         | 4       |
 | `MAX_STREAM_MLP` | LSQ: max independent reqs per stream      | 3       |
-| `PEN`            | per-overlap contention penalty (cycles)   | 4       |
+| `NB`             | DRAM banks on the shared channel          | 2       |
+| `G`              | channel inter-admission gap (`1/bw`, `<B`)| 2       |
+| `TRC`            | bank-conflict row-cycle penalty (cycles)  | 8       |
 | `W_HIGH`         | MSHRs for `System_HighMLP`                | 6       |
 | `W_LOW`          | MSHRs for `System_LowMLP`                 | 2       |
 
