@@ -8,7 +8,8 @@ architecture:
 Conventional wisdom says yes — wider outstanding-miss windows (more MSHRs) hide
 memory latency and speed things up. This engine uses the **Z3 SMT solver** to
 *search for a counterexample*: a memory-access workload on which a high-MLP core
-is provably **slower** than a low-MLP core. It finds one.
+is **slower** than a low-MLP core. Whether one exists within the bounds is left
+to Z3; the engine makes no claim about the answer in advance.
 
 ## How it works
 
@@ -16,12 +17,13 @@ is provably **slower** than a low-MLP core. It finds one.
 sequence of `N` memory requests and evaluates that one sequence on **two
 mathematical CPU models** simultaneously:
 
-| Machine          | MSHR window `W` | Behavior                |
-|------------------|-----------------|-------------------------|
-| `System_HighMLP` | 6               | aggressive, many misses in flight |
-| `System_LowMLP`  | 2               | throttled, few misses in flight   |
+| Machine          | MSHR window `W` |
+|------------------|-----------------|
+| `System_HighMLP` | 6               |
+| `System_LowMLP`  | 2               |
 
-Both machines run the **same workload**. The only difference is `W`.
+Both machines run the **same workload** under the **same axioms**. The only
+difference is the MSHR window `W`.
 
 Crucially, the workload is **not hand-written**. Z3 synthesizes it from scratch
 — the data-dependency graph, the per-request stream assignment, and the arrival
@@ -30,9 +32,11 @@ question with a standard solver (no optimizer):
 
 > Does there exist a legal workload such that `T_HighMLP > T_LowMLP`?
 
-If the answer is **SAT**, Z3 hands back the exact adversarial workload — and the
-engine then keeps searching for the workload that **maximizes** the slowdown
-(see *Finding the worst case* below).
+If the answer is **SAT**, Z3 hands back a workload — and the engine then keeps
+searching for the workload that **maximizes** the deviation (see *Finding the
+worst case* below). If the answer is **UNSAT**, no such workload exists within
+the bounds. We report whichever Z3 returns and analyze the witness; we do not
+assume an outcome.
 
 ### What Z3 gets to choose (the symbolic workload)
 - `A[i]` — program-order arrival time of each request.
@@ -59,31 +63,27 @@ engine then keeps searching for the workload that **maximizes** the slowdown
    where `conflicts[j] = #{ i<j : Bk[i]==Bk[j] && E[i] > St[j] }`.
 4. **Timeline** — total cycles `T = max(E)`.
 
-## Why high-MLP can lose: bank contention
+## What makes the search non-trivial
 
-The key physics is in Axiom 3, and it is modeled the way real hardware behaves —
-not as a bookkeeping tax. The memory channel has **finite bandwidth** (one
-admission every `G` cycles), so a wide MSHR window genuinely puts more requests
-*in flight at the same time*. When two of those in-flight requests hit the **same
-DRAM bank**, the bank cannot serve both open rows at once and pays a row-cycle
-penalty (`TRC`). The low-MLP machine issues fewer misses at a time, so fewer
-same-bank requests are ever co-resident — it sidesteps the conflicts.
+Axiom 3 models a **finite-bandwidth channel** (one admission every `G` cycles)
+with a per-conflict row-cycle penalty (`TRC`) when same-bank requests overlap in
+flight on the modeled timeline (`E[i] > St[j]`). This matters for one structural
+reason: without a bandwidth-limited channel the model is **monotone in `W`** — a
+larger window can never increase completion time — and the discovery query is
+vacuously UNSAT. The finite-bandwidth channel is what makes `T_HighMLP >
+T_LowMLP` even expressible.
 
-So there is a genuine trade-off: high-MLP presents requests *earlier* but, by
-crowding the banks, pays *more conflicts*. The dogma holds only when the first
-effect wins. Z3's job is to find a workload where the second effect wins instead.
-
-(Contention arises from **genuine in-flight overlap** on the modeled timeline
-(`E[i] > St[j]`), not from counting an issue window. Without a bandwidth-limited
-channel the model is monotone in `W` — more MLP could only ever help — and the
-search would be vacuously UNSAT. The physics is identical for both machines; only
-the window `W` differs.)
+The physics in Axioms 1–4 is **identical for both machines**; only the window
+`W` differs. We make no claim here about whether a counterexample exists, or by
+what mechanism one would arise if it does — that is exactly what Z3 is asked to
+decide, and what we analyze in any witness it returns.
 
 ## Finding the worst case
 
-A single counterexample only proves the dogma is *false*; it says nothing about
-*how* false. So once the discovery query is SAT, the engine searches for the
-workload that **maximizes** the deviation `Delta = T_HighMLP - T_LowMLP`.
+A single counterexample only shows one workload exists. Once the discovery query
+is SAT, the engine searches for the workload that **maximizes** the deviation
+`Delta = T_HighMLP - T_LowMLP`, so the reported figure is the largest Z3 can
+exhibit within the bounds rather than an arbitrary first hit.
 
 This is done **without `z3::optimize`** (a deliberate design constraint), by
 incrementally tightening the standard solver: remember the best model, assert
@@ -125,15 +125,13 @@ Conclusion: T_HighMLP = 85  >  T_LowMLP = 64   (delta = 21 cycles)
 More memory-level parallelism made this workload SLOWER.
 ```
 
-Z3 first finds a workload with a 1-cycle slowdown, then drives it up to a
-**21-cycle** worst case (6-MSHR core: **85 cycles**, 2-MSHR core: **64**) before
-the final maximality probe hits the 60 s timeout — so 21 is a timeout-limited
-lower bound on the worst case here. The slowdown comes from same-bank access
-bursts the deep MSHR file pulls into concurrent flight, paying row-cycle
-conflicts the throttled core spaces out and avoids. With a faithful
-finite-bandwidth channel the effect is real but bounded — a genuine break-even,
-not the inflated artifact an unbounded contention tax would produce. The dogma is
-false in general.
+For this configuration Z3 first returns a workload with a 1-cycle deviation, then
+drives it up to **21 cycles** (6-MSHR core: **85 cycles**, 2-MSHR core: **64**)
+before the final maximality probe hits the 60 s timeout — so 21 is a
+timeout-limited lower bound on the worst case here, not a proved maximum. These
+are the numbers Z3 produced for this run; the engine prints the witness workload
+(arrivals, stream assignment, dependency matrix) so the mechanism behind any
+particular result can be read off and analyzed directly rather than assumed.
 
 ## Configuration
 
