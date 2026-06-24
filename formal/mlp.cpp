@@ -26,24 +26,12 @@
 //   construction and the discovery engine could never find anything.
 //
 //   The single piece of physics the bare axioms omit is SHARED-RESOURCE
-//   CONTENTION. We model it the way real hardware works, NOT as a bookkeeping
-//   tax on an issue window:
-//
-//     * The memory channel is a finite-BANDWIDTH server, not a strict FIFO.
-//       It admits a new request every G cycles (G < B), so requests genuinely
-//       OVERLAP in flight -- that is what MLP buys you.
-//     * DRAM is split into NB banks. A request that starts service while an
-//       earlier request to the SAME bank is still outstanding hits a bank
-//       conflict and pays a row-cycle penalty TRC (precharge+activate): the
-//       bank cannot service two open rows at once.
-//
-//   Contention therefore emerges from GENUINE QUEUEING on the modeled timeline
-//   (E[i] > St[j] == "i is still in flight when j starts"), not from counting
-//   how many requests share an issue window. This is identical physics for BOTH
+//   CONTENTION: when many requests are concurrently in flight on a single FIFO
+//   bus / DRAM channel, each overlapping access pays a queueing/arbitration
+//   penalty. This is the real reason aggressive MLP can backfire. We fold it
+//   into Axiom 3 as a per-overlap penalty that is identical physics for BOTH
 //   machines; the ONLY thing that differs between the two systems is the MLP
-//   window W. A wider W issues earlier, so more same-bank requests are truly
-//   co-resident in flight -> more bank conflicts. A narrow W self-throttles and
-//   dodges them. This keeps the model faithful while making the dogma genuinely
+//   window W. This keeps the model faithful while making the dogma genuinely
 //   FALSIFIABLE, which is the entire purpose of a discovery engine.
 //
 // Build:
@@ -66,14 +54,10 @@ using z3::solver;
 namespace cfg {
     constexpr int N             = 8;   // Unroll depth (number of memory requests).
     constexpr int S             = 2;   // Hardware threads -> number of distinct streams.
-    constexpr int B             = 10;  // Fixed bank service latency per access (cycles).
+    constexpr int B             = 10;  // Fixed bus latency per access (cycles).
     constexpr int ROB_SIZE      = 4;   // Reorder-buffer horizon: deps span <= ROB_SIZE.
     constexpr int MAX_STREAM_MLP= 3;   // LSQ: max concurrently-independent reqs per stream.
-    constexpr int NB            = 2;   // DRAM banks on the shared channel.
-    constexpr int G             = 2;   // Channel inter-admission gap (1/bandwidth), G < B
-                                       //   => requests genuinely overlap in flight.
-    constexpr int TRC           = 8;   // Bank-conflict (row-cycle) penalty: precharge+activate
-                                       //   paid when a same-bank request is still in flight.
+    constexpr int PEN           = 4;   // Per-overlap bus-contention penalty (shared physics).
     constexpr int HORIZON       = 64;  // Upper bound for synthesized arrival times.
 
     // The single differentiating knob: the MLP / MSHR outstanding-miss window.
@@ -114,8 +98,7 @@ struct Timeline {
 static Timeline build_machine(context& c, solver& sol,
                               const std::string& tag, int W,
                               const std::vector<std::vector<expr>>& Dep,
-                              const std::vector<expr>& A,
-                              const std::vector<expr>& Bk) {
+                              const std::vector<expr>& A) {
     using namespace cfg;
     Timeline tl(c);
     tl.Aeff.reserve(N); tl.Aprime.reserve(N); tl.St.reserve(N); tl.E.reserve(N);
@@ -145,32 +128,35 @@ static Timeline build_machine(context& c, solver& sol,
             sol.add(Aprime_j == Aeff_j);
         tl.Aprime.push_back(Aprime_j);
 
-        // ---- Axiom 3 (Bandwidth admission + bank-conflict contention) --------
-        // The channel is a finite-BANDWIDTH server, not a strict FIFO: it admits
-        // a new request every G cycles (G < B), so requests genuinely OVERLAP in
-        // flight -- exactly what MLP is supposed to buy.
-        //   St[j] = max(A'[j], St[j-1] + G).
-        // (We pace on prior START, not prior END, so multiple accesses can be
-        //  simultaneously outstanding on the channel.)
-        expr St_prev = (j == 0) ? c.int_val(0) : tl.St[j - 1];
+        // ---- Axiom 3 (FIFO Serialization + contention) -----------------------
+        // Bus start St[j] = max(A'[j], E[j-1]) : single FIFO channel.
+        // Bus end   E[j]  = St[j] + B + PEN * overlap[j].
+        //
+        // overlap[j] = number of earlier INDEPENDENT (no true-dep) sibling
+        // misses inside this machine's MLP window [j-W, j) that the MSHR file
+        // allows to be outstanding concurrently with j. These siblings contend
+        // for the shared DRAM channel (bank conflicts / arbitration), so each
+        // adds PEN cycles. The penalty is IDENTICAL physics for both machines;
+        // the ONLY thing that differs is the window width W -- a wider MSHR file
+        // exposes more concurrent siblings, hence more contention. This is the
+        // real, faithful mechanism by which aggressive MLP can backfire, and it
+        // is precisely what makes the dogma falsifiable.
+        //
+        // NOTE: a strict index-order FIFO bus can never let two requests overlap
+        // *on the bus* (St[j] >= E[j-1]), so contention must be measured at the
+        // MSHR/issue level (the window), not at the bus level -- otherwise the
+        // model is monotone in W and the query is trivially UNSAT.
+        expr E_prev = (j == 0) ? c.int_val(0) : tl.E[j - 1];
         expr St_j = c.int_const(("St_" + tag + "_" + std::to_string(j)).c_str());
-        sol.add(St_j == zmax(Aprime_j, St_prev + c.int_val(G)));
+        sol.add(St_j == zmax(Aprime_j, E_prev));
         tl.St.push_back(St_j);
 
-        // Bank-conflict contention: an earlier request i to the SAME bank that is
-        // still in flight when j starts (E[i] > St[j]) forces a row-cycle penalty
-        // TRC -- the bank cannot serve two open rows at once. This is GENUINE
-        // queueing on the modeled timeline, not a count over an issue window:
-        // conflicts arise only between requests that truly co-reside in flight.
-        // W enters only via MSHR gating above, so a wider window issues earlier,
-        // raises more same-bank requests into concurrent flight, and pays more
-        // conflicts; a narrow window self-throttles and dodges them.
-        expr conflicts = c.int_val(0);
-        for (int i = 0; i < j; ++i)
-            conflicts = conflicts +
-                b2i(c, (Bk[i] == Bk[j]) && (tl.E[i] > St_j)); // same bank, still in flight
+        expr overlap = c.int_val(0);
+        int lo = (j - W > 0) ? (j - W) : 0;
+        for (int i = lo; i < j; ++i)
+            overlap = overlap + b2i(c, !Dep[i][j]); // independent sibling in MLP window
         expr E_j = c.int_const(("E_" + tag + "_" + std::to_string(j)).c_str());
-        sol.add(E_j == St_j + c.int_val(B) + c.int_val(TRC) * conflicts);
+        sol.add(E_j == St_j + c.int_val(B) + c.int_val(PEN) * overlap);
         tl.E.push_back(E_j);
     }
 
@@ -213,15 +199,13 @@ int main(int argc, char** argv) {
     // -------------------------------------------------------------------------
     // Synthesized symbolic workload (what Z3 gets to choose).
     // -------------------------------------------------------------------------
-    std::vector<expr> A, K, Bk;                   // A[i]:arrival K[i]:stream Bk[i]:bank
-    A.reserve(N); K.reserve(N); Bk.reserve(N);
+    std::vector<expr> A, K;                       // A[i]: arrival,  K[i]: stream id
+    A.reserve(N); K.reserve(N);
     for (int i = 0; i < N; ++i) {
         A.push_back(c.int_const(("A_" + std::to_string(i)).c_str()));
         K.push_back(c.int_const(("K_" + std::to_string(i)).c_str()));
-        Bk.push_back(c.int_const(("Bk_" + std::to_string(i)).c_str()));
         sol.add(A[i] >= 0 && A[i] <= HORIZON);    // bounded arrivals
         sol.add(K[i] >= 0 && K[i] <  S);           // S streams (hardware threads)
-        sol.add(Bk[i] >= 0 && Bk[i] < NB);         // NB DRAM banks on the channel
     }
     // Program order: arrivals are non-decreasing. This realizes the "else
     // A[j] >= A[i]" leg of Axiom 1 for all non-dependent predecessors at once.
@@ -261,8 +245,8 @@ int main(int argc, char** argv) {
     // -------------------------------------------------------------------------
     // Instantiate both machines over the shared workload.
     // -------------------------------------------------------------------------
-    Timeline high = build_machine(c, sol, "High", W_HIGH, Dep, A, Bk);
-    Timeline low  = build_machine(c, sol, "Low",  W_LOW,  Dep, A, Bk);
+    Timeline high = build_machine(c, sol, "High", W_HIGH, Dep, A);
+    Timeline low  = build_machine(c, sol, "Low",  W_LOW,  Dep, A);
 
     // -------------------------------------------------------------------------
     // The discovery query: does there exist a workload on which MORE MLP is WORSE?
@@ -275,9 +259,8 @@ int main(int argc, char** argv) {
 
     std::cout << "=== MLP dogma discovery engine ===\n"
               << "N=" << N << "  streams(S)=" << S << "  B=" << B
-              << "  ROB=" << ROB_SIZE << "  MAX_STREAM_MLP=" << MAX_STREAM_MLP << "\n"
-              << "banks(NB)=" << NB << "  channel-gap(G)=" << G
-              << "  bank-conflict(TRC)=" << TRC << "\n"
+              << "  ROB=" << ROB_SIZE << "  MAX_STREAM_MLP=" << MAX_STREAM_MLP
+              << "  PEN=" << PEN << "\n"
               << "W_HighMLP=" << W_HIGH << "  W_LowMLP=" << W_LOW << "\n"
               << "solver timeout=" << timeout_ms << " ms"
               << (timeout_ms == 0 ? " (none)" : "") << "\n"
@@ -341,12 +324,10 @@ int main(int argc, char** argv) {
     std::cout << "Worst-case workload where High-MLP is SLOWER "
                  "(maximum deviation):\n\n";
 
-    std::cout << "Stream K[i], bank Bk[i], arrival A[i]:\n  i :";
+    std::cout << "Stream assignment K[i] and arrival A[i]:\n  i :";
     for (int i = 0; i < N; ++i) std::cout << std::setw(4) << i;
     std::cout << "\n  K :";
     for (int i = 0; i < N; ++i) std::cout << std::setw(4) << iv(K[i]);
-    std::cout << "\n  Bk:";
-    for (int i = 0; i < N; ++i) std::cout << std::setw(4) << iv(Bk[i]);
     std::cout << "\n  A :";
     for (int i = 0; i < N; ++i) std::cout << std::setw(4) << iv(A[i]);
     std::cout << "\n\n";

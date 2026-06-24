@@ -30,11 +30,10 @@ maximization probe, so a larger value lets the worst-case search climb further.
 ## Where to change things
 
 All knobs are in `namespace cfg` at the top of `mlp.cpp`:
-- `N`, `S`, `B` — unroll depth, streams (threads), per-access bank service latency.
+- `N`, `S`, `B` — unroll depth, streams (threads), per-access bus latency.
 - `ROB_SIZE`, `MAX_STREAM_MLP` — dependency-matrix pipeline bounds.
-- `NB`, `G`, `TRC` — the shared-channel memory model (see critical note below):
-  number of DRAM banks, channel inter-admission gap (`1/bandwidth`, must be
-  `< B`), and the bank-conflict row-cycle penalty.
+- `PEN` — the per-overlap bus-contention penalty (see critical note below): each
+  independent sibling miss inside the MLP window adds `PEN` cycles of service.
 - `W_HIGH`, `W_LOW` — the MSHR windows of the two machines (the only knob that
   differs between them). Currently `6` vs `2`.
 
@@ -49,30 +48,30 @@ times. With them alone the query `T_HighMLP > T_LowMLP` is provably **UNSAT**
 and the engine discovers nothing. This was observed empirically — an early
 version returned UNSAT.
 
-The model is made falsifiable by a **faithful finite-bandwidth memory channel**
-in Axiom 3 (not a bookkeeping window tax — that was the original approach and is
-deliberately retired):
+The model is made falsifiable by **shared-resource contention** folded into
+Axiom 3 as a per-overlap penalty:
 
-- **Bandwidth admission, not strict FIFO.** `St[j] = max(A'[j], St[j-1] + G)`
-  with `G < B`. The channel admits a request every `G` cycles, so requests
-  genuinely **overlap in flight** — which is the entire point of MLP. (Pacing on
-  the prior *start* + `G`, not the prior *end*, is what allows overlap; a
-  strict `St[j] >= E[j-1]` FIFO is the UNSAT trap and must not return.)
-- **Bank-conflict contention from genuine overlap.** DRAM is `NB` banks
-  (synthesized per request as `Bk[i]`). `E[j] = St[j] + B + TRC * conflicts[j]`,
-  where `conflicts[j]` counts earlier requests to the **same bank still in
-  flight** when `j` starts (`Bk[i] == Bk[j] && E[i] > St[j]`). This is real
-  queueing on the modeled timeline, *not* a count over an issue window.
+- **Strict FIFO serialization.** `St[j] = max(A'[j], E[j-1])` — a single FIFO
+  bus / DRAM channel: request `j` cannot start service until its predecessor on
+  the bus has finished.
+- **Window-level contention penalty.** `E[j] = St[j] + B + PEN * overlap[j]`,
+  where `overlap[j]` counts the earlier **independent** (no true-dep) sibling
+  misses inside this machine's MLP window `[j-W, j)` that the MSHR file lets be
+  outstanding concurrently with `j`. Each such sibling contends for the shared
+  channel (bank conflicts / arbitration) and adds `PEN` cycles.
 
-`W` enters **only** through MSHR gating (`A'[j] = max(Aeff[j], E[j-W])`). A wider
-window issues earlier → more same-bank requests are truly co-resident in flight
-→ more bank conflicts; a narrow window self-throttles and dodges them. The
-physics is identical for both machines; only `W` differs.
+The penalty is **identical physics for both machines**; the only thing that
+differs is the window width `W`. A wider MSHR file exposes more concurrent
+siblings → more contention; the narrow window self-throttles and dodges it. `W`
+enters both through MSHR gating (`A'[j] = max(Aeff[j], E[j-W])`) and through the
+`overlap` window bound.
 
-If you touch `build_machine`: keep the channel bandwidth-limited (overlap must be
-possible) **and** keep contention keyed to genuine in-flight overlap (`E[i] >
-St[j]`) rather than the bus end-time FIFO, or the discovery query goes vacuously
-UNSAT. Do not reintroduce the window-count penalty `PEN * overlap`.
+Key subtlety — **contention must be measured at the MSHR/issue level (the
+window), not at the bus level.** A strict index-order FIFO bus can never let two
+requests overlap *on the bus* (`St[j] >= E[j-1]`), so a bus-level overlap count
+is monotone in `W` and the query goes vacuously **UNSAT**. The `overlap` count
+over `[j-W, j)` is what makes the dogma falsifiable; do not move it to the bus
+timeline.
 
 ## Maximizing the deviation (worst case)
 
@@ -96,36 +95,30 @@ prove maximality.
 
 ## Status
 
-Refined finite-bandwidth model (`NB=2`, `G=2`, `TRC=8`, `B=10`), `6 vs 2` MSHRs:
-- First counterexample → SAT, delta `1`.
-- Maximization climbs to **delta = 21 cycles** (`T_HighMLP = 85 > T_LowMLP = 64`).
-- At a 600s timeout (`./mlp 600`) the final probe for `>= 22` returns UNSAT, so
-  **delta = 21 is a proved maximum** — no workload makes High-MLP slower by more.
-  (At the default 60s timeout that probe times out and 21 is reported only as a
-  timeout-limited lower bound; the larger budget closes the proof.)
+FIFO + window-tax model (`B=10`, `PEN=4`), `6 vs 2` MSHRs:
+- First counterexample → SAT, delta `35`.
+- Maximization climbs `35 → 52 → 55 → 56`, and the final probe for `>= 57`
+  returns UNSAT, so **delta = 56 is a proved maximum** — no workload within the
+  bounds makes High-MLP slower by more. This finishes well inside the default
+  60s timeout (a few seconds at `./mlp 30`).
 
-The dogma still falsifies, and the margin is **physically believable** — a
-genuine break-even driven by same-bank bursts the deep MSHR file pulls into
-concurrent flight, paying row-cycle conflicts the throttled machine spaces out
-and avoids. (This replaces the old unbounded window-tax model, whose 43-cycle
-delta was an inflated artifact.)
+The dogma falsifies: more MLP is worse on the discovered workload. The mechanism
+is the window-level contention tax — the deep MSHR file exposes many independent
+siblings concurrently and pays `PEN` per overlap, while the shallow window
+self-throttles and avoids most of it.
 
 ### Worst-case witness (the proved-maximal workload)
 
-The `delta = 21` counterexample is a clean instance of DRAM bank-conflict
-physics, *not* a modeling artifact:
+The `delta = 56` counterexample (`T_HighMLP = 170 > T_LowMLP = 114`):
 
-- **HighMLP (W=6)** never gates — six MSHRs exceed anything the unroll needs, so
-  `E[j-6]` is always stale and the machine issues as early as the `G=2` channel
-  allows. That aggression lands four requests in a bank whose prior access is
-  still draining (`j=2,3,4,7`, each `St[j]` one or two cycles short of the
-  predecessor's `E[i]`), paying `TRC=8` four times → `T = 85`.
-- **LowMLP (W=2)** is throttled by its shallow MSHR file, which incidentally
-  spaces same-bank requests exactly one row-service apart (`St[j] == E[i]`, and
-  the conflict test `E[i] > St[j]` is strict, so equality is a near-miss). It
-  pays **zero** conflicts → `T = 64`.
+- **HighMLP (W=6)** never gates on its MSHR file — six slots exceed anything the
+  unroll needs — so it pulls the full window of independent siblings into
+  concurrent flight and pays the `PEN * overlap` tax on each, inflating its
+  per-access service times and the FIFO tail.
+- **LowMLP (W=2)** is throttled by its shallow window: it can only ever count a
+  small `overlap`, so it pays far fewer penalty cycles even though MSHR gating
+  delays some issues.
 
-The throttled machine accidentally implements a bank-aware issue schedule; the
-aggressive one collides repeatedly. Delta is 21 rather than the naive `4*8 = 32`
-because LowMLP's gating gives back ~11 cycles of latency it would otherwise have
-saved — the honest net break-even.
+The aggressive machine's larger concurrent-sibling count is exactly what its
+extra MLP buys, and it is precisely what costs it the contention penalty — the
+net is that more MLP makes this workload slower by 56 cycles.
