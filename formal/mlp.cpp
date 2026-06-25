@@ -88,8 +88,13 @@ namespace cfg {
     // parallelism / bus pipelining doing their job). Past C each costs PEN_LO;
     // past the steeper knee C2 each ADDITIONALLY costs PEN_HI. This is a convex
     // cost with a service-rate knee, not a flat per-overlap tax.
-    constexpr int C             = 2;   // Free concurrency (overlaps below this cost nothing).
-    constexpr int C2            = 4;   // Steeper knee: beyond this, contention bites harder.
+    //
+    // C is NOT hand-picked: a pipelined channel of service latency B admitting a
+    // new request every G cycles sustains ~B/G requests in flight for free (the
+    // bandwidth-delay product). Tying C := B/G makes the free-concurrency budget
+    // a DERIVED property of the channel physics rather than an asserted constant.
+    constexpr int C             = B / G; // Free concurrency = bandwidth-delay product.
+    constexpr int C2            = C + 2;  // Steeper knee: just beyond the free regime.
     constexpr int PEN_LO        = 3;   // Per-overlap cost in the [C, C2) regime.
     constexpr int PEN_HI        = 5;   // Additional per-overlap cost beyond C2.
 
@@ -120,6 +125,7 @@ struct Timeline {
     std::vector<expr> Aprime;   // channel-presentation time (after MSHR gating)
     std::vector<expr> St;       // channel service start (pipelined admission + turnaround)
     std::vector<expr> Inflight; // # earlier requests still in service when j starts
+    std::vector<expr> Pen;      // convex queueing penalty incurred while serving j
     std::vector<expr> E;        // channel service end
     expr              T;        // system cycles = max over E
     explicit Timeline(context& c) : T(c.int_val(0)) {}
@@ -140,7 +146,7 @@ static Timeline build_machine(context& c, solver& sol,
     using namespace cfg;
     Timeline tl(c);
     tl.Aeff.reserve(N); tl.Aprime.reserve(N); tl.St.reserve(N);
-    tl.Inflight.reserve(N); tl.E.reserve(N);
+    tl.Inflight.reserve(N); tl.Pen.reserve(N); tl.E.reserve(N);
 
     for (int j = 0; j < N; ++j) {
         // ---- Axiom 1 (Causality) ---------------------------------------------
@@ -171,16 +177,25 @@ static Timeline build_machine(context& c, solver& sol,
         // Channel start: the bus admits a new request every G cycles (pipelined
         // finite bandwidth, G < B, so requests OVERLAP in flight -- this is the
         // latency hiding MLP exists to exploit), plus a TT-cycle turnaround
-        // bubble whenever the service direction switches read<->write:
-        //   St[j] = max( A'[j], St[j-1] + G + TT*switch[j] )
-        // St stays non-decreasing in index, so channel service order == index
-        // order (no reordering modeled here).
+        // bubble whenever the service direction switches read<->write, PLUS the
+        // queueing penalty the previous request is still paying:
+        //   St[j] = max( A'[j], St[j-1] + G + TT*switch[j] + Pen[j-1] )
+        //
+        // BACKPRESSURE (the closed loop): the convex contention penalty is not a
+        // dead-end term on E -- it feeds FORWARD into the next admission. A
+        // request that the channel is serving slowly (because it is one of many
+        // in flight) holds the resource longer, so the next request admits later.
+        // Because St is a forward chain, this penalty COMPOUNDS across every later
+        // request: a wide window that floods the channel stalls its OWN future
+        // issue, not just the contended request's completion. This is what makes
+        // "more MLP is worse" physically possible rather than impossible by
+        // construction. St stays non-decreasing in index (no reordering modeled).
         expr St_j = c.int_const(("St_" + tag + "_" + std::to_string(j)).c_str());
         if (j == 0) {
             sol.add(St_j == Aprime_j);
         } else {
             expr sw = b2i(c, RW[j] != RW[j - 1]);          // bus direction change
-            expr gap = c.int_val(G) + c.int_val(TT) * sw;
+            expr gap = c.int_val(G) + c.int_val(TT) * sw + tl.Pen[j - 1];
             sol.add(St_j == zmax(Aprime_j, tl.St[j - 1] + gap));
         }
         tl.St.push_back(St_j);
@@ -200,13 +215,18 @@ static Timeline build_machine(context& c, solver& sol,
         // Convex queueing delay: the first C overlaps are FREE (bank-level
         // parallelism / bus pipelining), past C each costs PEN_LO, and past the
         // steeper knee C2 each costs PEN_HI more.
-        //   E[j] = St[j] + B + PEN_LO*max(0, inflight-C) + PEN_HI*max(0, inflight-C2)
+        //   Pen[j] = PEN_LO*max(0, inflight-C) + PEN_HI*max(0, inflight-C2)
+        // Named so it can both extend E[j] (slower completion) AND back-pressure
+        // the next admission St[j+1] (the closed loop -- see Axiom 3 above).
         expr over1 = zmax(c.int_val(0), Inflight_j - c.int_val(C));
         expr over2 = zmax(c.int_val(0), Inflight_j - c.int_val(C2));
+        expr Pen_j = c.int_const(("Pen_" + tag + "_" + std::to_string(j)).c_str());
+        sol.add(Pen_j == c.int_val(PEN_LO) * over1 + c.int_val(PEN_HI) * over2);
+        tl.Pen.push_back(Pen_j);
+
+        //   E[j] = St[j] + B + Pen[j]
         expr E_j = c.int_const(("E_" + tag + "_" + std::to_string(j)).c_str());
-        sol.add(E_j == St_j + c.int_val(B)
-                       + c.int_val(PEN_LO) * over1
-                       + c.int_val(PEN_HI) * over2);
+        sol.add(E_j == St_j + c.int_val(B) + Pen_j);
         tl.E.push_back(E_j);
     }
 
@@ -406,6 +426,7 @@ int main(int argc, char** argv) {
         std::cout << "   A'   :"; for (auto& e : tl.Aprime)   std::cout << std::setw(5) << iv(e); std::cout << "\n";
         std::cout << "   St   :"; for (auto& e : tl.St)       std::cout << std::setw(5) << iv(e); std::cout << "\n";
         std::cout << "   nfly :"; for (auto& e : tl.Inflight) std::cout << std::setw(5) << iv(e); std::cout << "\n";
+        std::cout << "   pen  :"; for (auto& e : tl.Pen)      std::cout << std::setw(5) << iv(e); std::cout << "\n";
         std::cout << "   E    :"; for (auto& e : tl.E)        std::cout << std::setw(5) << iv(e); std::cout << "\n";
         std::cout << "   T    = " << iv(tl.T) << "\n";
     };

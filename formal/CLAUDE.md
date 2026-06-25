@@ -38,7 +38,9 @@ All knobs are in `namespace cfg` at the top of `mlp.cpp`:
 - `C`, `C2`, `PEN_LO`, `PEN_HI` — the **convex** queueing-delay curve (see
   critical note below): the first `C` concurrently-in-flight requests are free,
   past `C` each costs `PEN_LO`, past the steeper knee `C2` each costs `PEN_HI`
-  more.
+  more. **`C` is derived, not hand-set:** `C := B/G` (the bandwidth-delay product
+  — the in-flight count a pipelined channel sustains for free), and `C2 := C+2`.
+  Change them by changing `B`/`G`, not by typing a magic number.
 - `W_HIGH`, `W_LOW` — the MSHR windows of the two machines (the only knob that
   differs between them). Currently `6` vs `2`.
 
@@ -65,8 +67,19 @@ differs:
   #{ i<j : E[i] > St[j] }` — how many earlier requests are still in service when
   `j` starts. Service cost is **convex** in it: the first `C` overlaps are free
   (bank-level parallelism), past `C` each costs `PEN_LO`, past `C2` each costs
-  `PEN_HI` more:
-  `E[j] = St[j] + B + PEN_LO*max(0,inflight-C) + PEN_HI*max(0,inflight-C2)`.
+  `PEN_HI` more. This penalty is named `Pen[j]` and applied to completion:
+  `Pen[j] = PEN_LO*max(0,inflight-C) + PEN_HI*max(0,inflight-C2)`,
+  `E[j] = St[j] + B + Pen[j]`.
+- **Admission backpressure (the closed loop) — `Pen` feeds `St`, not just `E`.**
+  The convex penalty is *not* a dead-end term on completion. It also feeds forward
+  into the next request's admission:
+  `St[j] = max(A'[j], St[j-1] + G + TT*switch[j] + Pen[j-1])`.
+  A request the channel is serving slowly holds the resource longer, so the next
+  request admits later — and because `St` is a forward chain, this **compounds**
+  across all later requests. This is genuine negative feedback: a contended
+  request admits later → later `St` → fewer earlier requests still in flight when
+  it starts → *lower* `inflight` → smaller penalty. The loop throttles the
+  channel toward its sustainable rate, exactly as a real shared bus does.
 
 **Why this is honest and not rigged.** The old model added `PEN * overlap` where
 `overlap` counted siblings in the *index* window `[j-W, j)` — a quantity
@@ -80,10 +93,21 @@ read/write turnaround `TT` is a third emergent cost. Do **not** revert to an
 index-window penalty term — that reintroduces the monotone-by-design artifact.
 
 Key consequence — **under the realistic default config the query is UNSAT, and
-that is the correct result, not a bug.** Once the channel offers a couple of
-requests of free concurrency (`C=2`), the wide window's latency-hiding benefit
-always covers its contention cost within the bounds. The backfire only emerges
-in a starved regime (small `C`, large `G`/penalties). See Status.
+that is the correct result, not a bug.** With `C = B/G = 5` requests of free
+concurrency, the wide window's latency-hiding benefit always covers its
+contention cost within the bounds. The backfire only emerges in a starved regime
+(small `C`). See Status.
+
+**Backpressure caps the divergence — do not expect it to break the dogma.** It is
+tempting to think feeding `Pen` into admission must make "more MLP is worse"
+*easier* (the wide window floods the channel and stalls its own issue). The
+opposite happens: backpressure is negative feedback, so it *bounds* the very
+divergence the old completion-only penalty allowed to run away. Concretely, the
+old pathological config (`G=6, C=0, C2=1, PEN_LO=8, PEN_HI=16`) drove a
+proved-maximal `Delta=72` when the penalty only hit `E`; with the penalty also
+feeding `St` the same config is **UNSAT**. That `72` was partly an artifact of
+penalizing latency *without spacing requests out*. The closed loop is the more
+faithful physics and it makes the dogma harder, not easier, to falsify.
 
 ## Maximizing the deviation (worst case)
 
@@ -107,54 +131,71 @@ prove maximality.
 
 ## Status
 
-Pipelined-channel + convex-queueing + R/W-turnaround model, `6 vs 2` MSHRs.
+Pipelined-channel + convex-queueing + R/W-turnaround model **with admission
+backpressure** and **derived free-concurrency `C = B/G`**, `6 vs 2` MSHRs.
 
-**Default (realistic) config — `G=2, TT=4, C=2, C2=4, PEN_LO=3, PEN_HI=5`:**
-the query is **UNSAT**. Within the bounds, more MLP is never worse — the
-latency-hiding benefit of the wide window always covers its contention cost once
-the channel offers `C=2` requests of free concurrency. **This is the honest
-result: the dogma holds under realistic physics.**
+**Default (realistic) config — `G=2, TT=4, C=B/G=5, C2=7, PEN_LO=3, PEN_HI=5`:**
+the query is **UNSAT**. Within the bounds, more MLP is never worse. **This is the
+honest result: the dogma holds under realistic physics.**
 
-**The backfire emerges only as the channel is starved.** Sweeping the free-
-concurrency budget `C` (other defaults fixed):
+**Two changes landed since the previous status, and the second overturned the
+expected outcome:**
+
+1. **`C` is now derived (`C := B/G = 5`), not hand-set to `2`.** The free
+   concurrency a pipelined channel sustains *is* the bandwidth-delay product, so
+   the old `C=2` understated the channel's own pipelining. This alone moves the
+   default deeper into the UNSAT region.
+2. **The convex penalty now back-pressures admission** (`Pen[j-1]` added to the
+   `St[j]` gap), not just completion. The expectation was that letting a wide
+   window stall its own issue would make the backfire *easier* to find. It does
+   the opposite: backpressure is **negative feedback**, so it bounds the
+   divergence the old completion-only penalty let run away.
+
+**The SAT/UNSAT boundary still sits between `C=1` and `C=2`** — backpressure did
+*not* move it. Sweeping `C` with both changes in place (other defaults fixed):
 
 | `C` | result |
 |-----|--------|
-| `2` (default) | **UNSAT** — dogma holds |
+| `5` (default = `B/G`) | **UNSAT** — dogma holds |
+| `4` | **UNSAT** |
+| `3` | **UNSAT** |
+| `2` | **UNSAT** |
 | `1` | SAT, proved max `Delta = 6` |
-| `0` | SAT, `Delta` climbs (timeout-limited at low budget) |
+| `0` | SAT, proved max `Delta = 4` |
 
-**Pathological channel — `G=6, C=0, C2=1, PEN_LO=8, PEN_HI=16`:** SAT, and
-maximization climbs `16 → 19 → 22 → 48 → 72` with the probe for `73` returning
-UNSAT, so **delta = 72 is a proved maximum** (`T_HighMLP = 154 > T_LowMLP = 82`),
-finishing inside `./mlp 30`.
+**The old pathological channel is now UNSAT.** `G=6, C=0, C2=1, PEN_LO=8,
+PEN_HI=16` previously drove a proved-maximal `Delta=72` (`154 > 82`). With the
+penalty also feeding `St`, the same config is **UNSAT**: the runaway tail was an
+artifact of penalizing latency without spacing requests out. Backpressure throttles
+the flooding machine toward the channel's sustainable rate, capping the deviation.
 
-### Worst-case witness (the pathological-regime proved-maximal workload)
+### Worst-case witness (the `C=1`, `Delta=6` proved-maximal workload)
 
-The `delta = 72` counterexample under the starved channel:
+The surviving backfire is small and lives just below the boundary. At `C=1` (all
+8 requests are reads, so `TT` never fires) Z3 drives a proved-maximal `Delta=6`:
 
-- **HighMLP (W=6)** never gates on its MSHR file, so it packs requests against
-  the channel admission bound; its `nfly` (in-flight) row climbs to **4**
-  concurrent requests, each paying the steep convex penalty (here everything past
-  `C2=1` costs `PEN_HI=16`), which stacks into a long tail (`E[7]=154`).
-- **LowMLP (W=2)** is throttled: its `nfly` row stays pinned at **1**, so it
-  almost never climbs the convex curve even though MSHR gating delays some issues
-  (`E[7]=82`).
+- **HighMLP (W=6)** never gates on its MSHR file, so it packs requests; its `nfly`
+  climbs `0 1 2 3`, and the convex penalty `pen` row reads `0 0 3 6` — that penalty
+  feeds the `St` chain (`St[3]=23=max(A'=22, St[2]+G+pen[2]=18+2+3)`), pushing its
+  tail to `E[7]=65`.
+- **LowMLP (W=2)** is MSHR-gated: its `A'` jumps (`24, 26, …`) so requests spread
+  out, `nfly` stays pinned at **1**, `pen` is all-zero, and it finishes at
+  `E[7]=59`.
 
-The aggressive machine's larger *temporal* in-flight count is what its extra MLP
-buys, and — only in this starved regime — it is precisely what costs it the
-convex contention penalty. Under the realistic default config the same mechanism
-exists but the free-concurrency budget absorbs it, so the dogma holds.
-
-The `nfly` row in the timeline dump is the variable to read to see the mechanism:
-it is the temporal in-flight count that drives the convex penalty.
+So the wide machine's extra temporal in-flight count is what costs it — but with
+backpressure the cost no longer compounds without bound, so the maximum deviation
+is a modest `6` rather than the old `72`. Read the `nfly` and `pen` rows together
+to see the mechanism: `nfly` drives `pen`, and `pen` now feeds both `E` (this
+request finishes later) and the next `St` (the next request admits later).
 
 ## Future work (deferred, not modeled)
 
 - **FR-FCFS / reordering memory controller** — the canonical academic backfire
-  mechanism; the channel here services in index order (`St` non-decreasing).
-- **Explicit DRAM row-buffer / banks / `tRC`/`tFAW`.**
+  mechanism; the channel here services in index order (`St` non-decreasing). With
+  backpressure now capping the convex-contention backfire, reordering/row-buffer
+  effects are the most likely remaining route to a realistic-regime SAT.
+- **Explicit DRAM row-buffer / banks / `tRC`/`tFAW`** — the scalar `inflight`
+  penalty is a locality-blind proxy for these; it cannot express one stream
+  evicting another's open row.
 - **Out-of-order MSHR completion + same-line miss merging** (gating currently
   assumes in-order completion via `E[j-W]`).
-- **Start-time backpressure** — queueing currently delays *completion* (`E`),
-  not *admission* (`St`).
