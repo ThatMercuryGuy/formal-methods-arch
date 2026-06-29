@@ -8,13 +8,14 @@ A single-file Z3 (C++ API) Bounded Model Checking engine, `mlp.cpp`, that tests
 the architectural dogma *"more Memory-Level Parallelism is always better."* It
 unrolls `N` memory requests over two state machines (`System_HighMLP`,
 `System_LowMLP`) that share one synthesized workload and differ only in their
-MSHR / outstanding-miss window `W`. A standard `z3::solver` (NOT `z3::optimize`)
+MSHR / outstanding-miss window `W`. A standard `z3::solver` (NOT `z3::optimize` —
+the latter was measured 200×+ slower on this model; see "Why not `z3::optimize`?")
 searches for a workload where `T_HighMLP > T_LowMLP`.
 
 ## Build & run
 
 ```
-g++ -std=c++23 mlp.cpp -lz3 -o mlp -Ofast -march=native
+g++ -std=c++23 mlp.cpp -lz3 -o mlp -O3 -march=native
 ./mlp           # default 60s solver timeout
 ./mlp 120       # optional first arg = solver timeout in SECONDS (0 = unlimited)
 ```
@@ -220,6 +221,45 @@ rather than a proof. The intermediate SAT steps are fast. Raising the timeout
 (e.g. `./mlp 600`) gives the final probe more room to either climb higher or
 prove maximality.
 
+### Why not `z3::optimize`? (measured — it is far slower here)
+
+The "no `z3::optimize`" rule is not stylistic; it is **empirically justified**.
+`z3::optimize` *does* support a direct `maximize(Delta)` objective, and switching
+to it was tried. It is a **severe performance regression on this model** — well
+over 200× slower:
+
+| Config (SPEC=0) | manual loop (`z3::solver`) | `z3::optimize` |
+|---|---|---|
+| `N=6, NB=1` | **UNSAT in 0.27 s** | **timeout (60 s)** |
+| `N=6, NB=3` | **proved max `Delta=5` in seconds** | **timeout (60 s)** |
+
+The slowdown is in the optimize **core, not the objective search**: a control
+build that registered **no** `maximize()` at all (pure `Delta>0` feasibility)
+*still* timed out at 60s where the plain solver decides it in 0.27s. So no choice
+of maximization strategy rescues it — `optsmt_engine=symba` also timed out.
+
+**Likely cause (hypothesis, not confirmed):** `z3::optimize` runs a leaner
+preprocessing pipeline than the default `z3::solver` and is conservative about
+eliminating variables (to preserve the objective term and incremental model
+events). This model is built almost entirely from **definitional equalities**
+(`Aeff_j == <ite-tree>`, `St_j == …`, hundreds of them); the plain solver's
+`solve-eqs`/`simplify` tactics substitute those away and collapse the formula,
+whereas optimize appears to keep them as free variables and search a vastly larger
+space for the identical logical problem. (Not verified via `statistics()`; if
+revisiting, dump decision/conflict counts from both engines to confirm.)
+
+Two notes for anyone tempted to retry the switch:
+- **Soundness is identical either way** — "max is `N`" means exactly "`Delta ≥ N+1`
+  is UNSAT," which both approaches must establish. The manual loop is not a
+  *stronger* proof, just the only one that finishes here. (Earlier docs/comments
+  hinting the manual loop is more "auditable" or "trustworthy" overstate it; the
+  real reason is performance.)
+- **A `z3::optimize` core lacks `reason_unknown()`**, and after a timeout its
+  `get_model()` can return a **degenerate model that violates the assertions**
+  (observed: all-zeros with `Delta=0`, despite `Delta>0` being asserted). Any
+  retry must validate the witness before trusting it — the manual loop sidesteps
+  this entirely by only ever adopting a `best` it has a satisfying model for.
+
 ## Status
 
 Pipelined-channel + convex-queueing + R/W-turnaround model **with admission
@@ -257,59 +297,61 @@ which makes this a more defensible falsification than the old hand-set `C=1`.
 
 ### Worst-case witness (the `NB=3`, `Delta=9` lower-bound workload)
 
-Hand-verified against the model's own equations (first four HighMLP requests
-recomputed by hand match the dumped timeline exactly — the SAT is real, not a
-solver artifact). All 12 requests are writes (so `TT` never fires — this is pure
-bank contention). Z3 puts requests 0–7 in **bank 0**, 8–11 in **bank 1**:
+Hand-verified against the model's own equations (the `nfly`/`pen`/`E` arithmetic
+matches the dumped timeline exactly — the SAT is real, not a solver artifact). Z3
+puts requests `{0,1,2,3,8,9,10,11}` in **bank 0** and `{4,5,6,7}` in **bank 1**
+(workload is mixed read/write). Run output: `out_spec0_nb3.txt`.
 
-- **HighMLP (W=6)** never gates on its MSHR file, so it packs the bank-0 requests
-  tight against the `G=2` admission gap — `nfly` for bank 0 climbs to **2–3**,
-  exceeding the per-bank free concurrency `C=1`. The convex penalty `pen` row reads
-  `0 0 3 3 3 3 3 3 …`, which feeds the `St` chain (backpressure) and pushes its tail
-  to `T=94`.
-- **LowMLP (W=2)** is MSHR-gated: its `A'` jumps (req 2: `A'=30` vs `Aeff=26`, held
-  by `E[0]`) so the *same* bank-0 requests spread out in time, `nfly` stays pinned
-  at **1**, `pen` is all-zero, and it finishes at `T=85`.
+- **HighMLP (W=6)** never gates on its MSHR file, so it packs same-bank requests
+  tight against the `G=2` admission gap — `nfly` climbs `0 1 2 3` within a bank-run,
+  exceeding the per-bank free concurrency `C=1`. With `C2=3` the convex penalty `pen`
+  row reads `0 0 3 6` per run (`PEN_LO*max(0,nfly-1) + PEN_HI*max(0,nfly-3)`), which
+  feeds the `St` chain (backpressure) and pushes its tail to `T=98`.
+- **LowMLP (W=2)** is MSHR-gated: its `A'` jumps (req 2: `A'=31`, held by `E[0]`) so
+  the *same* requests spread out in time, `nfly` stays pinned at **1**, `pen` is
+  all-zero, and it finishes at `T=89`.
 
-Same shared bank tags, same workload; `Delta = 94 − 85 = 9` emerges purely from `W`
+Same shared bank tags, same workload; `Delta = 98 − 89 = 9` emerges purely from `W`
 through the schedule. Read the `Bk`, `nfly`, and `pen` rows together: the bank tag
 decides *who collides*, `nfly` counts the same-bank collisions, and `pen` turns them
 into delay that both slows completion (`E`) and back-pressures the next admission
 (`St`).
 
-### Strategy B (wrong-path speculation) — IMPLEMENTED, VERIFICATION PENDING
+### Strategy B (wrong-path speculation) — MEASURED, SAT, hand-verified
 
-The `SPEC`/`BR`/`Sq`/`Live`/`Cf`/`Rel`/`R` machinery described in the critical
-modeling note is **implemented in `mlp.cpp`** (default `SPEC=1`) and **compiles
-clean** at both `SPEC=0` and `SPEC=1`. **No SAT/UNSAT result has been measured
-yet** — the binaries have not been run. Do not cite an outcome until the runs
-below land and the witness is hand-verified.
+The `SPEC`/`BR`/`Sq`/`Live`/`Cf`/`Rel`/`R` machinery is implemented in `mlp.cpp`
+(default `SPEC=1`) and the runs have **landed**. **Wrong-path waste independently
+falsifies the dogma** at `NB=2`, where bank contention alone is UNSAT — a second,
+independent falsifier. Validated in the required order: strict-generalization guards
+first, then the headline run, then hand-verification.
 
-Required runs (TODO §7), in order:
+| Config | Result | Run output |
+|--------|--------|------------|
+| `SPEC=0, NB=2` (guard) | **UNSAT** — reproduces bank-only baseline exactly ✓ | `out_spec0_nb2.txt` |
+| `SPEC=0, NB=3` (guard) | **SAT, `Delta ≥ 9`** — reproduces bank-only baseline exactly ✓ | `out_spec0_nb3.txt` |
+| `SPEC=1, NB=2` (headline) | **SAT, `Delta ≥ 8`** (lower bound; maximization hit 600s timeout) | `out_spec1_nb2.txt` |
 
-1. **Strict-generalization guard (non-negotiable, first).** Build `-DCFG_SPEC=0`
-   and confirm it reproduces the committed baselines **exactly**:
-   - `g++ -std=c++23 -DCFG_SPEC=0 mlp.cpp -lz3 -o mlp -Ofast -march=native; ./mlp 600`
-     → must be **UNSAT ~199s** (NB=2 default).
-   - `g++ -std=c++23 -DCFG_SPEC=0 -DCFG_NB=3 mlp.cpp -lz3 -o mlp ...; ./mlp 600`
-     → must be **SAT `Delta ≥ 9`**.
-   If either diverges, the generalization is broken — fix before trusting any
-   `SPEC=1` result.
-2. **Headline run.** Build default (`SPEC=1`, `NB=2`, where A1 alone is UNSAT):
-   `g++ -std=c++23 mlp.cpp -lz3 -o mlp -Ofast -march=native; ./mlp 600`.
-   - **SAT** ⇒ speculation waste **independently falsifies the dogma**.
-     **Hand-verify the witness** (mandatory — recompute `St`/`Live`/`E` for the
-     first few requests from the printed equations, as was done for the A1 NB=3
-     witness). Confirm the wide machine has **more** `Live` wrong-path requests
-     before `R` (the printed "wrong-path issue depth") and a later correct-path
-     tail. If the witness does not show that, the SAT is suspect — investigate.
-   - **UNSAT** ⇒ honest negative; record it (strengthens the case for A2).
-3. **Sweep if SAT:** `NB=1`+SPEC and `RESOLVE_DELAY` variants; report whether
-   Δ-max was **proved** or a timeout **lower bound**.
+**Headline witness (`SPEC=1, NB=2`, hand-verified).** Z3 mispredicts a branch at
+`BR=2` with a 4-request shadow `Sq={3,4,5,6}`, resolving at `R = E[2] = 36`
+(identical for both machines — the misprediction is *shared*; only the per-machine
+issue depth differs):
 
-When a result lands, replace this subsection with the measured outcome + the
-hand-verified witness (mirror the A1 NB=3 subsection above), and update
-README.md and the `bank-tag-falsifies-mlp-dogma` memory.
+- **LowMLP (W=2)** is MSHR-gated: shadow requests cannot present until slots free
+  (`A'[4]=36`, `A'[5]=41`, both `≥ R=36`), so they reach the bus *after* resolve and
+  are killed in the issue queue (`Live=0`). **Only shadow req 3 goes live → issue
+  depth 1.**
+- **HighMLP (W=6)** has no such gate: its shadow presents immediately (`A'[3..5]=31`)
+  and packs against `G=2` — `St[3]=31, St[4]=33, St[5]=35`, all `< 36`. **Three
+  shadow requests reach the bus → issue depth 3.** (Req 6 just misses, `St=44 > 36`,
+  pushed past resolve by a `TT=4` turnaround bubble plus a `Pen=3` penalty.)
+
+Those three wasted admissions on the wide machine burn bus slots, a turnaround
+bubble, and bank occupancy, delaying its **correct-path** tail to `T=88` vs the
+narrow window's `T=80`. `Delta = 8` emerges purely from `W`. The
+`St`/`Live`/`Cf`/`Pen` rows were recomputed by hand and match the dump exactly.
+
+Remaining sweep (deferred, not yet run): `NB=1`+SPEC and `RESOLVE_DELAY` variants;
+report whether Δ-max is **proved** or a timeout **lower bound**.
 
 ## Future work (deferred, not modeled)
 
@@ -330,7 +372,7 @@ README.md and the `bank-tag-falsifies-mlp-dogma` memory.
 `inflight` is now a per-bank count via the shared `Bank[]` tag (Strategy A1). This
 is what falsified the dogma at `NB≥3`; see Status.
 
-**Implemented, verification pending:** wrong-path / pipeline-flush waste
-(Strategy B) — the `SPEC`/`BR`/`Sq`/`Live`/`Cf`/`Rel` machinery is in `mlp.cpp`
-but the headline run has not been executed. See the Strategy B subsection under
-Status for the required validation runs.
+**Done (no longer deferred):** wrong-path / pipeline-flush waste (Strategy B) — the
+`SPEC`/`BR`/`Sq`/`Live`/`Cf`/`Rel` machinery is in `mlp.cpp`, measured **SAT** at
+`SPEC=1, NB=2` (a second independent falsifier) and hand-verified. See the Strategy B
+subsection under Status.

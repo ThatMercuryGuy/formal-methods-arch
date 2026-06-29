@@ -25,7 +25,7 @@
  * Bank tag is shared per request (solver cannot rig contention per-machine).
  * Inflight derived from St/E (schedule), not W-indexed window → backfire must emerge.
  *
- * Build: g++ -std=c++23 mlp.cpp -lz3 -o mlp -Ofast -march=native
+ * Build: g++ -std=c++23 mlp.cpp -lz3 -o mlp -O3 -march=native
  */
 
 #include <z3++.h>

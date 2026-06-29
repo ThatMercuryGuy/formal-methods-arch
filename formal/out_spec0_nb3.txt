@@ -1,0 +1,62 @@
+=== MLP dogma discovery engine ===
+N=12  streams(S)=2  B=10  ROB=4  MAX_STREAM_MLP=3
+G=2  TT=4  NB=3  C=1  C2=3  PEN_LO=3  PEN_HI=5
+SPEC=0  (speculation off -> reduces to base model)
+W_HighMLP=6  W_LowMLP=2
+solver timeout=600000 ms
+Query: exists workload with  T_HighMLP > T_LowMLP ?
+
+SAT at delta = 1 cycles; maximizing...
+  found larger delta = 2 cycles
+  found larger delta = 3 cycles
+  found larger delta = 4 cycles
+  found larger delta = 5 cycles
+  found larger delta = 6 cycles
+  found larger delta = 7 cycles
+  found larger delta = 8 cycles
+  found larger delta = 9 cycles
+  stopped (timeout); reporting best found.
+
+Worst-case workload where High-MLP is SLOWER (maximum deviation):
+
+Stream K[i], arrival A[i], type RW[i] (0=read,1=write):
+  i :   0   1   2   3   4   5   6   7   8   9  10  11
+  K :   0   0   0   0   0   1   1   1   1   0   0   0
+  A :  21  21  21  29  30  30  30  30  30  45  56  58
+  RW:   0   0   0   0   1   1   1   1   1   1   1   1
+  Bk:   0   0   0   0   1   1   1   1   0   0   0   0
+
+Dependency matrix Dep[i][j]  (1 => j consumes i's result):
+     j:  0  1  2  3  4  5  6  7  8  9 10 11
+  i=0 :  0  0  0  0  0  0  0  0  0  0  0  0
+  i=1 :  0  0  0  0  1  0  0  0  0  0  0  0
+  i=2 :  0  0  0  0  0  0  0  0  0  0  0  0
+  i=3 :  0  0  0  0  1  0  0  0  0  0  0  0
+  i=4 :  0  0  0  0  0  0  0  0  0  0  0  0
+  i=5 :  0  0  0  0  0  0  0  0  1  0  0  0
+  i=6 :  0  0  0  0  0  0  0  0  1  0  0  0
+  i=7 :  0  0  0  0  0  0  0  0  1  0  0  0
+  i=8 :  0  0  0  0  0  0  0  0  0  0  0  0
+  i=9 :  0  0  0  0  0  0  0  0  0  0  0  0
+  i=10 :  0  0  0  0  0  0  0  0  0  0  0  0
+  i=11 :  0  0  0  0  0  0  0  0  0  0  0  0
+
+System_HighMLP timeline:
+   Aeff :   21   21   21   29   47   30   30   30   73   45   56   58
+   A'   :   21   21   21   29   47   30   31   33   73   46   57   59
+   St   :   21   23   25   30   47   49   51   56   73   75   77   82
+   nfly :    0    1    2    3    0    1    2    3    0    1    2    3
+   pen  :    0    0    3    6    0    0    3    6    0    0    3    6
+   E    :   31   33   38   46   57   59   64   72   83   85   90   98
+   T    = 98
+System_LowMLP  timeline:
+   Aeff :   21   21   21   29   44   30   30   30   67   45   56   58
+   A'   :   21   21   31   33   44   43   54   56   67   66   77   79
+   St   :   21   23   31   33   44   46   54   56   67   69   77   79
+   nfly :    0    1    1    1    0    1    1    1    0    1    1    1
+   pen  :    0    0    0    0    0    0    0    0    0    0    0    0
+   E    :   31   33   41   43   54   56   64   66   77   79   87   89
+   T    = 89
+
+Conclusion: T_HighMLP = 98  >  T_LowMLP = 89   (delta = 9 cycles)
+More memory-level parallelism made this workload SLOWER.

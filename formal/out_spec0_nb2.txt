@@ -1,0 +1,9 @@
+=== MLP dogma discovery engine ===
+N=12  streams(S)=2  B=10  ROB=4  MAX_STREAM_MLP=3
+G=2  TT=4  NB=2  C=2  C2=4  PEN_LO=3  PEN_HI=5
+SPEC=0  (speculation off -> reduces to base model)
+W_HighMLP=6  W_LowMLP=2
+solver timeout=600000 ms
+Query: exists workload with  T_HighMLP > T_LowMLP ?
+
+UNSAT: no counterexample. Within these bounds, more MLP is never worse -- the dogma holds.

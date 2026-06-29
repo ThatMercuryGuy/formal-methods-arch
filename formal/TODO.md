@@ -72,7 +72,7 @@ any of them:
 
 Build line (defaults shown; vary `-DCFG_SPEC` / `-DCFG_NB`):
 ```
-g++ -std=c++23 mlp.cpp -lz3 -o mlp -Ofast -march=native
+g++ -std=c++23 mlp.cpp -lz3 -o mlp -O3 -march=native
 ```
 
 ### Step 1 — Strict-generalization guard (NON-NEGOTIABLE, do first)
@@ -81,10 +81,10 @@ g++ -std=c++23 mlp.cpp -lz3 -o mlp -Ofast -march=native
 diverges, the generalization is broken — fix before trusting any `SPEC=1` result.
 
 ```
-g++ -std=c++23 -DCFG_SPEC=0          mlp.cpp -lz3 -o mlp -Ofast -march=native
+g++ -std=c++23 -DCFG_SPEC=0          mlp.cpp -lz3 -o mlp -O3 -march=native
 ./mlp 600     # NB=2 default  -> MUST be UNSAT (~199s)
 
-g++ -std=c++23 -DCFG_SPEC=0 -DCFG_NB=3 mlp.cpp -lz3 -o mlp -Ofast -march=native
+g++ -std=c++23 -DCFG_SPEC=0 -DCFG_NB=3 mlp.cpp -lz3 -o mlp -O3 -march=native
 ./mlp 600     # NB=3          -> MUST be SAT, Delta >= 9
 ```
 
@@ -94,7 +94,7 @@ committed `N=12`.)
 ### Step 2 — Headline run (the experiment)
 
 ```
-g++ -std=c++23 mlp.cpp -lz3 -o mlp -Ofast -march=native   # SPEC=1, NB=2
+g++ -std=c++23 mlp.cpp -lz3 -o mlp -O3 -march=native   # SPEC=1, NB=2
 ./mlp 600
 ```
 
