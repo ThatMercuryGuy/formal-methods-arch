@@ -72,7 +72,7 @@ using z3::solver;
 // Tunable parameters of the unrolled model.
 // ----------------------------------------------------------------------------
 namespace cfg {
-    constexpr int N             = 8;   // Unroll depth (number of memory requests).
+    constexpr int N             = 12;   // Unroll depth (number of memory requests).
     constexpr int S             = 2;   // Hardware threads -> number of distinct streams.
     constexpr int B             = 10;  // Bank access latency per request (cycles).
     constexpr int ROB_SIZE      = 4;   // Reorder-buffer horizon: deps span <= ROB_SIZE.
@@ -83,17 +83,40 @@ namespace cfg {
     constexpr int G             = 2;   // Channel inter-admission gap (1/bandwidth), G < B.
     constexpr int TT            = 4;   // Read/write bus turnaround bubble (direction switch).
 
-    // ---- Convex queueing-delay curve (shared physics, both machines) ---------
-    // The first C concurrently in-flight requests are FREE (bank-level
-    // parallelism / bus pipelining doing their job). Past C each costs PEN_LO;
-    // past the steeper knee C2 each ADDITIONALLY costs PEN_HI. This is a convex
-    // cost with a service-rate knee, not a flat per-overlap tax.
+    // ---- Bank-tag locality proxy (shared physics, both machines) -------------
+    // Instead of carrying raw addresses (modular arithmetic -> nonlinear, bad for
+    // Z3 termination), we carry only the OBSERVABLE EQUIVALENCE CLASS that DRAM
+    // timing actually reads: which bank a request lands in. bank[j] in [0,NB) is
+    // a small finite-domain tag (like K[] and RW[]), and all contention physics
+    // reduces to equality tests bank[i]==bank[j] -- the cheapest thing Z3 does.
     //
-    // C is NOT hand-picked: a pipelined channel of service latency B admitting a
-    // new request every G cycles sustains ~B/G requests in flight for free (the
-    // bandwidth-delay product). Tying C := B/G makes the free-concurrency budget
-    // a DERIVED property of the channel physics rather than an asserted constant.
-    constexpr int C             = B / G; // Free concurrency = bandwidth-delay product.
+    // The tag is SHARED across both machines (the same physical request has one
+    // bank, seen identically by High and Low), so the solver cannot rig contention
+    // per-machine -- a free per-machine conflict matrix could, a shared tag cannot.
+    //
+    // NB is overridable at compile time for sweeping:  g++ -DCFG_NB=3 ...
+    // NB=1 collapses to a single bank -> every pair is same-bank -> EXACTLY the
+    // old locality-blind global-inflight model (a strict generalization).
+#ifndef CFG_NB
+#define CFG_NB 2
+#endif
+    constexpr int NB            = CFG_NB; // Number of banks (locality classes).
+
+    // ---- Convex queueing-delay curve (shared physics, both machines) ---------
+    // Contention is now counted PER BANK: only earlier requests still in service
+    // AND in the same bank as j contend with it. The first C such same-bank
+    // overlaps are FREE, past C each costs PEN_LO, past the steeper knee C2 each
+    // ADDITIONALLY costs PEN_HI. Convex cost with a service-rate knee.
+    //
+    // C is NOT hand-picked. The bandwidth-delay product B/G is the number of
+    // DISTINCT BANKS a pipelined channel keeps busy for free (while one request
+    // occupies a bank for B cycles, the bus admits B/G others -- ideally to OTHER
+    // banks). Spread that free budget over NB banks and the PER-BANK free
+    // concurrency is (B/G)/NB, floored at 1 (a bank always serves >=1 for free).
+    //   - NB=1 -> C = B/G = 5: recovers the old single-channel value exactly.
+    //   - more banks -> lower per-bank pileup: the dogma should hold harder, which
+    //     is physically correct (plenty of banks => no same-bank serialization).
+    constexpr int C             = (B / G) / NB > 0 ? (B / G) / NB : 1; // per-bank free conc.
     constexpr int C2            = C + 2;  // Steeper knee: just beyond the free regime.
     constexpr int PEN_LO        = 3;   // Per-overlap cost in the [C, C2) regime.
     constexpr int PEN_HI        = 5;   // Additional per-overlap cost beyond C2.
@@ -142,7 +165,8 @@ static Timeline build_machine(context& c, solver& sol,
                               const std::string& tag, int W,
                               const std::vector<std::vector<expr>>& Dep,
                               const std::vector<expr>& A,
-                              const std::vector<expr>& RW) {
+                              const std::vector<expr>& RW,
+                              const std::vector<expr>& Bank) {
     using namespace cfg;
     Timeline tl(c);
     tl.Aeff.reserve(N); tl.Aprime.reserve(N); tl.St.reserve(N);
@@ -201,13 +225,20 @@ static Timeline build_machine(context& c, solver& sol,
         tl.St.push_back(St_j);
 
         // Temporal in-flight count: how many EARLIER requests are still being
-        // served when j starts on the channel. This is measured in TIME (via
-        // St/E), not in an index window, and it spans ALL streams -- so it
-        // captures cross-thread interference and depends on W only THROUGH the
-        // schedule. That is what keeps the contention non-monotone-by-design.
+        // served when j starts on the channel AND land in the SAME BANK as j.
+        // This is measured in TIME (via St/E), not in an index window, and it
+        // spans ALL streams -- so it captures cross-thread interference and
+        // depends on W only THROUGH the schedule. Filtering by same-bank turns
+        // the old locality-BLIND global pileup into a locality-AWARE one: only
+        // requests that actually collide on the same bank serialize. With NB>1
+        // the solver controls WHERE contention lands -- it can pile the wide
+        // machine's bunched in-flight requests onto one bank while the throttled
+        // machine's time-spread requests to that same bank never overlap. That
+        // is a discrete, schedule-targeted backfire, not a smooth scalar tax.
+        // (NB=1 => Bank[i]==Bank[j] always => recovers the old global count.)
         expr inflight = c.int_val(0);
         for (int i = 0; i < j; ++i)
-            inflight = inflight + b2i(c, tl.E[i] > St_j);
+            inflight = inflight + b2i(c, (tl.E[i] > St_j) && (Bank[i] == Bank[j]));
         expr Inflight_j = c.int_const(("Inflight_" + tag + "_" + std::to_string(j)).c_str());
         sol.add(Inflight_j == inflight);
         tl.Inflight.push_back(Inflight_j);
@@ -269,20 +300,37 @@ int main(int argc, char** argv) {
     // -------------------------------------------------------------------------
     // Synthesized symbolic workload (what Z3 gets to choose).
     // -------------------------------------------------------------------------
-    std::vector<expr> A, K, RW;                   // A: arrival, K: stream id, RW: read/write
-    A.reserve(N); K.reserve(N); RW.reserve(N);
+    std::vector<expr> A, K, RW, Bank;             // A: arrival, K: stream id, RW: read/write, Bank: locality class
+    A.reserve(N); K.reserve(N); RW.reserve(N); Bank.reserve(N);
     for (int i = 0; i < N; ++i) {
         A.push_back(c.int_const(("A_" + std::to_string(i)).c_str()));
         K.push_back(c.int_const(("K_" + std::to_string(i)).c_str()));
         RW.push_back(c.int_const(("RW_" + std::to_string(i)).c_str()));
+        Bank.push_back(c.int_const(("Bank_" + std::to_string(i)).c_str()));
         sol.add(A[i] >= 0 && A[i] <= HORIZON);    // bounded arrivals
         sol.add(K[i] >= 0 && K[i] <  S);           // S streams (hardware threads)
         sol.add(RW[i] >= 0 && RW[i] <= 1);         // 0 = read, 1 = write
+        sol.add(Bank[i] >= 0 && Bank[i] < NB);     // NB banks (locality classes)
     }
     // Program order: arrivals are non-decreasing. This realizes the "else
     // A[j] >= A[i]" leg of Axiom 1 for all non-dependent predecessors at once.
     for (int i = 0; i + 1 < N; ++i)
         sol.add(A[i] <= A[i + 1]);
+
+    // Bank-label symmetry breaking: the bank ids are interchangeable labels, so
+    // without this Z3 wastes the search exploring up to NB! relabelings of the
+    // SAME physical model. Pin bank[0]=0 and force each bank id to be at most one
+    // greater than the max id used so far ("banks appear in first-occurrence
+    // order"). This is the standard finite-domain symmetry break and usually
+    // matters more for runtime than NB itself.
+    if (NB > 1) {
+        sol.add(Bank[0] == 0);
+        expr running_max = Bank[0];
+        for (int i = 1; i < N; ++i) {
+            sol.add(Bank[i] <= running_max + 1);
+            running_max = zmax(running_max, Bank[i]);
+        }
+    }
 
     // Dependency matrix Dep[i][j]: "request j consumes a value produced by i".
     std::vector<std::vector<expr>> Dep(N, std::vector<expr>(N, c.bool_val(false)));
@@ -317,8 +365,8 @@ int main(int argc, char** argv) {
     // -------------------------------------------------------------------------
     // Instantiate both machines over the shared workload.
     // -------------------------------------------------------------------------
-    Timeline high = build_machine(c, sol, "High", W_HIGH, Dep, A, RW);
-    Timeline low  = build_machine(c, sol, "Low",  W_LOW,  Dep, A, RW);
+    Timeline high = build_machine(c, sol, "High", W_HIGH, Dep, A, RW, Bank);
+    Timeline low  = build_machine(c, sol, "Low",  W_LOW,  Dep, A, RW, Bank);
 
     // -------------------------------------------------------------------------
     // The discovery query: does there exist a workload on which MORE MLP is WORSE?
@@ -332,7 +380,8 @@ int main(int argc, char** argv) {
     std::cout << "=== MLP dogma discovery engine ===\n"
               << "N=" << N << "  streams(S)=" << S << "  B=" << B
               << "  ROB=" << ROB_SIZE << "  MAX_STREAM_MLP=" << MAX_STREAM_MLP << "\n"
-              << "G=" << G << "  TT=" << TT << "  C=" << C << "  C2=" << C2
+              << "G=" << G << "  TT=" << TT << "  NB=" << NB
+              << "  C=" << C << "  C2=" << C2
               << "  PEN_LO=" << PEN_LO << "  PEN_HI=" << PEN_HI << "\n"
               << "W_HighMLP=" << W_HIGH << "  W_LowMLP=" << W_LOW << "\n"
               << "solver timeout=" << timeout_ms << " ms"
@@ -405,6 +454,8 @@ int main(int argc, char** argv) {
     for (int i = 0; i < N; ++i) std::cout << std::setw(4) << iv(A[i]);
     std::cout << "\n  RW:";
     for (int i = 0; i < N; ++i) std::cout << std::setw(4) << iv(RW[i]);
+    std::cout << "\n  Bk:";
+    for (int i = 0; i < N; ++i) std::cout << std::setw(4) << iv(Bank[i]);
     std::cout << "\n\n";
 
     std::cout << "Dependency matrix Dep[i][j]  (1 => j consumes i's result):\n     j:";
