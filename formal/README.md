@@ -60,47 +60,31 @@ analyze the witness.
 
 1. **Causality** — a dependent request waits for its producer to retire;
    otherwise it respects program order.
-2. **MSHR gating** — a request cannot present to the channel until an
-   outstanding-miss slot frees: `A'[j] = max(Aeff[j], Rel[j-W])`. The slot
-   release `Rel[j]` is `E[j]`, except a squashed wrong-path request (`SPEC=1`)
-   that never issued, which frees early at the squash cycle `R`. This is the
-   **only** axiom that reads `W`.
-3. **Pipelined channel + convex queueing + turnaround + backpressure** — the core
-   physics. The channel admits a new request every `G` cycles (`G < B`, so
-   requests **overlap in flight** — the latency hiding MLP exists to exploit),
-   plus a `TT`-cycle bubble whenever the read/write direction switches. Service
-   cost grows with how many earlier requests are still in flight **on the same
-   bank** when `j` starts — `inflight[j] = #{ i<j : E[i] > St[j] ∧ Bank[i] ==
-   Bank[j] }` — under a **convex** curve: the first `C` same-bank overlaps are
-   free, past `C` each costs `PEN_LO`, past the steeper knee `C2` each costs
-   `PEN_HI` more:
+2. **MSHR gating** — a request cannot present to the channel until a slot frees:
+   `A'[j] = max(Aeff[j], Rel[j-W])`. Slot release `Rel[j] = E[j]` (or early at
+   squash `R` if the request never issued in `SPEC=1` mode). **Only axiom that
+   reads `W`.**
+3. **Pipelined channel + convex per-bank queueing + turnaround + backpressure.**
+   The channel admits one request every `G < B` cycles (requests overlap for
+   latency hiding) and adds a `TT`-cycle bubble on read/write direction switches.
+   Service cost is convex in same-bank occupancy: `inflight[j] = #{ i<j : E[i] >
+   St[j] ∧ Bank[i] == Bank[j] }`. Penalty and admission:
 
    ```
    Pen[j] = PEN_LO·max(0, inflight-C) + PEN_HI·max(0, inflight-C2)
-   E[j]   = St[j] + B + Pen[j]                       # completion
-   St[j]  = max(A'[j], St[j-1] + G + TT·switch[j] + Pen[j-1])   # next admission
+   E[j]   = St[j] + B + Pen[j]
+   St[j]  = max(A'[j], St[j-1] + G + TT·switch[j] + Pen[j-1])
    ```
 
-   `Pen` does **two** things: it delays this request's completion *and*
-   back-pressures the next request's admission. That backpressure closes a
-   **negative-feedback** loop — a request the channel serves slowly holds the bus
-   longer, so the next admits later, and because `St` is a forward chain this
-   compounds. `C` is **derived, not tuned**: the bandwidth-delay product `B/G` is
-   the number of distinct banks the channel keeps busy for free, so the *per-bank*
-   free concurrency is `C = (B/G)/NB` (floored at 1).
-3½. **Wrong-path speculation** *(`SPEC=1` only; `SPEC=0` removes it entirely and
-   reduces the model to exactly Axioms 1–4)*. A mispredicted branch `BR` is fetched
-   and the front-end speculatively issues the wrong-path shadow `Sq[]` until the
-   branch resolves at `R = E[BR]`, then squashes it. The depth each machine reaches
-   is **emergent**: `Live[j] = ¬Sq[j] ∨ (St[j] < R)` marks whether request `j`
-   actually occupies the bus on *this* machine. The bus admission chain **skips**
-   non-live shadow requests (one killed before it issues costs the bus nothing),
-   and `inflight` and the MSHR release are likewise masked by `Live`. Total cycles
-   count **correct-path completions only**, so a wide window that issues deeper
-   down the wrong path can delay the real work a narrow window finishes sooner.
-4. **Timeline** — total cycles `T = max(E)` over **correct-path** requests
-   (squashed wrong-path requests excluded; with `SPEC=0` there are none, so this
-   is just `max(E)`).
+   The penalty `Pen[j]` delays both completion **and** the next admission
+   (negative feedback). `C = (B/G)/NB` is derived from the bandwidth-delay product
+   divided over banks.
+3½. **Wrong-path speculation** *(`SPEC=1` only).* A mispredicted branch `BR`
+   triggers a shared shadow `Sq[]` until resolving at `R = E[BR]`, at which point
+   it squashes. Per-machine issue depth is emergent:
+   `Live[j] = ¬Sq[j] ∨ (St[j] < R)`. The bus skips non-live requests; total
+   cycles count correct-path completions only.
+4. **Timeline** — `T = max(E)` over correct-path requests.
 
 ## What makes the search non-trivial
 
