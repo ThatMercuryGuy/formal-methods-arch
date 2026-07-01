@@ -2,15 +2,18 @@
 
 Read `CLAUDE.md` (the "Critical modeling fact" section) and the README "Results"
 section before starting. Strategy B (wrong-path speculation) is **done, measured,
-and documented** — both falsifiers (bank contention at `NB≥3`, speculation at
-`NB=2` / `CONTENTION=0`) have landed and are hand-verified.
+and documented** — hand-verified with a proved maximal `Delta=5` at
+`CONTENTION=0, SPEC=1, N=8`. It is the mechanism that **falsifies** the dogma; the
+convex queueing penalty (`CONTENTION=1`) is a genuine MLP *cost* but does not
+falsify on its own (contention alone is UNSAT — the benefit covers the cost and
+backpressure bounds divergence).
 
 ---
 
 ## 0. The new goal (this changes the search objective)
 
-The project has shifted from *"can Z3 falsify the dogma?"* (answered: yes, two
-independent ways) to a sharper aim:
+The project has shifted from *"can Z3 falsify the dogma?"* (answered: yes, via
+wrong-path speculation) to a sharper aim:
 
 > **Find a workload Z3 synthesizes that maps onto a buildable real-life scenario
 > AND that a human architect would not have intuitively predicted.**
@@ -18,7 +21,7 @@ independent ways) to a sharper aim:
 This is a different objective from **Δ-max**. The largest-Δ witness is not
 necessarily the most interesting one. Concretely:
 
-- The current `SPEC=1, CONTENTION=0` witness (wrong-path read steals a bus slot and
+- The current `SPEC=1` witness (wrong-path read steals a bus slot and
   forces a R→W turnaround) is **real but too intuitive** — "a doomed load steals
   bus bandwidth" is a first-order answer any architect would give. Good existence
   proof, weak as a *surprise*.
@@ -67,10 +70,12 @@ The surprising ones live in the **feedback and cross-thread** regimes:
   *specifically because* its contention penalty fed back into admission and
   **reordered which requests collide** — a chain "more MLP → earlier admission →
   higher inflight → penalty → later admission of a *different* request" that a human
-  reasoning "more overlap = faster" would not trace.
+  reasoning "more overlap = faster" would not trace. (Note: contention alone is
+  UNSAT at the default config, so such a witness likely needs `SPEC=1` too — the
+  interesting question is whether the feedback *amplifies* the speculation effect.)
 - **Cross-thread interference** (`S=2`, already available). `inflight` spans all
   streams. Find a witness where the wide window's aggression on **stream A** floods
-  a bank and delays **stream B's** critical request — the victim is not the
+  the channel and delays **stream B's** critical request — the victim is not the
   speculating thread. Maps directly to real SMT / multicore bandwidth contention and
   is genuinely non-obvious.
 - **Phase-dependent "helpful-looking" request.** A request that looks like it should
@@ -100,12 +105,11 @@ pattern**. For each survivor of §1:
 
 ## Open items deferred from the modeling roadmap (not the current focus)
 
-- **Strategy A2** — row-buffer hit/miss + FR-FCFS reordering. Row tag does nothing
-  until service order is `W`-dependent (symbolic permutation — the expensive piece).
-  Add the row tag and reordering *together*.
-- **Strategy C** — `tFAW`/`tRRD` activate window (≤4 activations/window); rides on
-  the existing `Bank` tags. A second independent "physics throttles parallelism."
-- **Remaining SPEC sweep** — `NB=1 + SPEC`, `RESOLVE_DELAY` variants; report whether
-  each Δ is **proved maximal** or a timeout **lower bound**.
-- **Re-confirm the `N=8` proved-max at `N=12`** for `SPEC=1, CONTENTION=0` — the
+- **DRAM bank/row locality + FR-FCFS reordering** — a bank/row tag does nothing
+  until service order is `W`-dependent (symbolic permutation — the expensive piece),
+  so it only becomes honest physics *together with* reordering. Add the tag and
+  reordering *together*, not separately.
+- **Remaining SPEC sweep** — `RESOLVE_DELAY` variants; report whether each Δ is
+  **proved maximal** or a timeout **lower bound**.
+- **Re-confirm the `N=8` proved-max at `N=12`** for `CONTENTION=0, SPEC=1` — the
   proof is currently only for `N=8` (max-Δ is non-decreasing in `N`).

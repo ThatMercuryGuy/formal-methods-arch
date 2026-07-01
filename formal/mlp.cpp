@@ -3,7 +3,7 @@
  * Unrolls N memory requests on two machines (System_HighMLP, System_LowMLP) that
  * share the same synthesized workload but differ only in MSHR window W.
  * Seeks workloads where T_HighMLP > T_LowMLP by modeling pipelined finite bandwidth,
- * convex per-bank queueing delay, admission backpressure, R/W turnaround, and
+ * convex queueing delay, admission backpressure, R/W turnaround, and
  * wrong-path speculation waste.
  *
  * Build: g++ -std=c++23 mlp.cpp -lz3 -o mlp -O3 -march=native
@@ -26,7 +26,7 @@ namespace cfg
 {
   constexpr int N             = 12;   // Unroll depth (number of memory requests).
   constexpr int S             = 2;    // Hardware threads -> number of distinct streams.
-  constexpr int B             = 10;   // Bank access latency per request (cycles).
+  constexpr int B             = 10;   // Memory access latency per request (cycles).
   constexpr int ROB_SIZE      = 4;    // Reorder-buffer horizon: deps span <= ROB_SIZE.
   constexpr int MAX_STREAM_MLP= 3;    // LSQ: max concurrently-independent reqs per stream.
   constexpr int HORIZON       = 64;   // Upper bound for synthesized arrival times.
@@ -35,32 +35,21 @@ namespace cfg
   constexpr int G             = 2;    // Channel inter-admission gap (1/bandwidth), G < B.
   constexpr int TT            = 4;    // Read/write bus turnaround bubble (direction switch).
 
-  /* Bank-tag locality proxy: OBSERVABLE equivalence class (which bank) not raw address.
-   * bank[j] ∈ [0,NB) ↔ contention iff bank[i]==bank[j]. SHARED across machines
-   * (solver cannot rig per-machine). NB=1 recovers old locality-blind model exactly.
-   * Override at compile time: g++ -DCFG_NB=3 ... */
-#ifndef CFG_NB
-#define CFG_NB 2
-#endif
-  constexpr int NB            = CFG_NB;
-
-  /* Convex queueing-delay curve (per-bank). First C same-bank overlaps free,
-   * past C each costs PEN_LO, past C2 each costs PEN_HI more. C = (B/G)/NB is
-   * NOT hand-picked: bandwidth-delay product B/G = distinct banks channel keeps
-   * busy for free; divided by NB banks → per-bank free concurrency. NB=1 → C=5
-   * (old model); NB≥3 → C=1 (dogma falsifiable in realistic many-bank regime). */
-  constexpr int C             = (B / G) / NB > 0 ? (B / G) / NB : 1;
+  /* Convex queueing-delay curve. First C concurrently-in-flight requests are free,
+   * past C each costs PEN_LO, past the steeper knee C2 each costs PEN_HI more.
+   * C = B/G is NOT hand-picked: it is the bandwidth-delay product, the number of
+   * requests the channel keeps busy for free. C2 := C+2. Change C by changing
+   * B/G, not by typing a magic number. */
+  constexpr int C             = (B / G) > 0 ? (B / G) : 1;
   constexpr int C2            = C + 2;
   constexpr int PEN_LO        = 3;
   constexpr int PEN_HI        = 5;
 
-  /* DRAM bank/row contention master switch. 1 (default) keeps the full
-   * Bank[]→inflight→Pen chain (convex per-bank queueing + admission
-   * backpressure). 0 forces Pen≡0, removing all bank/row contention: the
-   * channel reduces to a pure pipelined bus (G admission gap + TT turnaround)
-   * + MSHR gating + speculation. This isolates wrong-path speculation as the
-   * sole anti-MLP mechanism. NB is then inert. NOTE: NB=1 does NOT do this —
-   * it stays bank-blind but still pays the convex penalty (C=B/G). Override:
+  /* Contention master switch. 1 (default) keeps the full inflight→Pen chain
+   * (convex queueing + admission backpressure). 0 forces Pen≡0, removing all
+   * queueing contention: the channel reduces to a pure pipelined bus (G admission
+   * gap + TT turnaround) + MSHR gating + speculation. This isolates wrong-path
+   * speculation as the sole anti-MLP mechanism. Override:
    * g++ -DCFG_CONTENTION=0 ... */
 #ifndef CFG_CONTENTION
 #define CFG_CONTENTION 1
@@ -72,8 +61,8 @@ namespace cfg
 
   /* Wrong-path speculation (Strategy B). Mispredicted branch BR → shadow of wrong-path
    * requests after it. Shadow is shared workload (both machines); issue depth emerges
-   * from St[j] < R only. Wide window issues deeper → wastes bus/MSHR/bank on shadow,
-   * delays correct-path tail. T counts correct-path completions only.
+   * from St[j] < R only. Wide window issues deeper → wastes bus/MSHR/queue slots on
+   * shadow, delays correct-path tail. T counts correct-path completions only.
    * SPEC=0 → strict-generalization guard, recovers old model exactly. */
 #ifndef CFG_SPEC
 #define CFG_SPEC 1
@@ -108,7 +97,7 @@ struct Timeline
   std::vector<expr> Cf;       // channel-free time (skips non-live shadow)
   std::vector<expr> St;       // service start (admission + turnaround)
   std::vector<expr> Live;     // reaches bus? (bool)
-  std::vector<expr> Inflight; // same-bank earlier requests still in service
+  std::vector<expr> Inflight; // earlier requests still in service
   std::vector<expr> Pen;      // convex queueing penalty
   std::vector<expr> E;        // service end
   std::vector<expr> Rel;      // MSHR release time (E or R if squashed)
@@ -124,7 +113,6 @@ build_machine(context& c, solver& sol,
               const std::vector<std::vector<expr>>& Dep,
               const std::vector<expr>& A,
               const std::vector<expr>& RW,
-              const std::vector<expr>& Bank,
               const expr& BR,
               const std::vector<expr>& Sq)
 {
@@ -179,20 +167,20 @@ build_machine(context& c, solver& sol,
       sol.add(Live_j == (!Sq[j] || (St_j < R)));
       tl.Live.push_back(Live_j);
 
-      // Inflight per bank: count earlier live requests still serving when j starts.
-      // With contention off there is no bank/row queueing, so the count is inert (0).
+      // Inflight: count earlier live requests still serving when j starts.
+      // With contention off there is no queueing, so the count is inert (0).
       expr inflight = c.int_val(0);
       if (CONTENTION) {
         for (int i = 0; i < j; ++i)
-          inflight = inflight + b2i(c, tl.Live[i] && (tl.E[i] > St_j) && (Bank[i] == Bank[j]));
+          inflight = inflight + b2i(c, tl.Live[i] && (tl.E[i] > St_j));
       }
       expr Inflight_j = c.int_const(("Inflight_" + tag + "_" + std::to_string(j)).c_str());
       sol.add(Inflight_j == inflight);
       tl.Inflight.push_back(Inflight_j);
 
       // Convex penalty: Pen[j] = PEN_LO*max(0,inflight-C) + PEN_HI*max(0,inflight-C2).
-      // CONTENTION=0 forces Pen≡0, dropping the bank/row contention chain entirely:
-      // Pen=0 falls out of both E[j] (completion) and the backpressure gap (admission).
+      // CONTENTION=0 forces Pen≡0, dropping the queueing chain entirely: Pen=0 falls
+      // out of both E[j] (completion) and the backpressure gap (admission).
       expr Pen_j = c.int_const(("Pen_" + tag + "_" + std::to_string(j)).c_str());
       if (CONTENTION) {
         expr over1 = zmax(c.int_val(0), Inflight_j - c.int_val(C));
@@ -276,33 +264,21 @@ main(int argc, char** argv)
    * Simplex core." */
   sol.set("arith.solver", (unsigned)2);
 
-  // Synthesized workload: arrivals A, stream ids K, read/write RW, bank tags
-  std::vector<expr> A, K, RW, Bank;
-  A.reserve(N); K.reserve(N); RW.reserve(N); Bank.reserve(N);
+  // Synthesized workload: arrivals A, stream ids K, read/write RW
+  std::vector<expr> A, K, RW;
+  A.reserve(N); K.reserve(N); RW.reserve(N);
   for (int i = 0; i < N; ++i)
     {
       A.push_back(c.int_const(("A_" + std::to_string(i)).c_str()));
       K.push_back(c.int_const(("K_" + std::to_string(i)).c_str()));
       RW.push_back(c.int_const(("RW_" + std::to_string(i)).c_str()));
-      Bank.push_back(c.int_const(("Bank_" + std::to_string(i)).c_str()));
       sol.add(A[i] >= 0 && A[i] <= HORIZON);
       sol.add(K[i] >= 0 && K[i] <  S);
       sol.add(RW[i] >= 0 && RW[i] <= 1);
-      sol.add(Bank[i] >= 0 && Bank[i] < NB);
     }
   // Program order: arrivals non-decreasing
   for (int i = 0; i + 1 < N; ++i)
     sol.add(A[i] <= A[i + 1]);
-
-  // Bank-label symmetry break (first-occurrence canonical form)
-  if (NB > 1) {
-    sol.add(Bank[0] == 0);
-    expr running_max = Bank[0];
-    for (int i = 1; i < N; ++i) {
-      sol.add(Bank[i] <= running_max + 1);
-      running_max = zmax(running_max, Bank[i]);
-    }
-  }
 
   // Stream-label symmetry break (first-occurrence canonical form)
   if (S > 1) {
@@ -364,8 +340,8 @@ main(int argc, char** argv)
     }
 
   // Instantiate both machines
-  Timeline high = build_machine(c, sol, "High", W_HIGH, Dep, A, RW, Bank, BR, Sq);
-  Timeline low  = build_machine(c, sol, "Low",  W_LOW,  Dep, A, RW, Bank, BR, Sq);
+  Timeline high = build_machine(c, sol, "High", W_HIGH, Dep, A, RW, BR, Sq);
+  Timeline low  = build_machine(c, sol, "Low",  W_LOW,  Dep, A, RW, BR, Sq);
 
   // Discovery: does T_HighMLP > T_LowMLP exist?
   expr Delta = c.int_const("Delta");
@@ -375,10 +351,10 @@ main(int argc, char** argv)
   std::cout << "=== MLP dogma discovery engine ===\n"
             << "N=" << N << "  streams(S)=" << S << "  B=" << B
             << "  ROB=" << ROB_SIZE << "  MAX_STREAM_MLP=" << MAX_STREAM_MLP << "\n"
-            << "G=" << G << "  TT=" << TT << "  NB=" << NB
+            << "G=" << G << "  TT=" << TT
             << "  C=" << C << "  C2=" << C2
             << "  PEN_LO=" << PEN_LO << "  PEN_HI=" << PEN_HI << "\n"
-            << "contention=" << (CONTENTION ? "on" : "off (Pen=0; banks inert)") << "\n"
+            << "contention=" << (CONTENTION ? "on" : "off (Pen=0)") << "\n"
             << "SPEC=" << SPEC
             << (SPEC ? "  MAX_SHADOW=" : "  (speculation off -> reduces to base model)")
             << (SPEC ? std::to_string(MAX_SHADOW) : std::string())
@@ -455,9 +431,6 @@ main(int argc, char** argv)
   std::cout << "\n  RW:";
   for (int i = 0; i < N; ++i)
     std::cout << std::setw(4) << iv(RW[i]);
-  std::cout << "\n  Bk:";
-  for (int i = 0; i < N; ++i)
-    std::cout << std::setw(4) << iv(Bank[i]);
   if (SPEC) {
     std::cout << "\n  Sq:";
     for (int i = 0; i < N; ++i)
