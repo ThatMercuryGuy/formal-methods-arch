@@ -23,7 +23,7 @@ using z3::solver;
 // Tunable parameters of the unrolled model.
 // ----------------------------------------------------------------------------
 namespace cfg {
-    constexpr int N             = 8;   // Unroll depth (number of memory requests).
+    constexpr int N             = 12;   // Unroll depth (number of memory requests).
     constexpr int S             = 2;   // Hardware threads -> number of distinct streams.
     constexpr int B             = 10;  // Bank access latency per request (cycles).
     constexpr int ROB_SIZE      = 4;   // Reorder-buffer horizon: deps span <= ROB_SIZE.
@@ -241,14 +241,23 @@ int main(int argc, char** argv) {
     sol.set("timeout", timeout_ms);
 
     /* Solver tuning (model-preserving — affects search strategy only, never the
-     * set of satisfying models). smt.arith.solver=1 selects Z3's Simplex-based
-     * ("old") arithmetic core instead of the default conflict-driven one (=2).
-     * Measured 2x+ faster on this model across every benchmark config (e.g. the
-     * default SPEC=1/NB=2 run drops from a 60s-timeout lower bound to a proved
-     * maximum in ~34s). This model is almost entirely difference-logic-style
-     * definitional equalities (St/E/Aeff chains) where the Simplex core's bound
-     * propagation outperforms the default's conflict-driven row generation. */
-    sol.set("arith.solver", (unsigned)1);
+     * set of satisfying models). smt.arith.solver=2 selects Z3's Simplex-based
+     * arithmetic core instead of the default LRA core (=6). Measured faster on
+     * this model (e.g. SPEC=1/N=8 proves its maximum in ~45s vs ~68s on the
+     * default) because the model is dominated by difference-logic-style
+     * definitional equalities (St/E/Aeff chains) that Simplex bound propagation
+     * handles well.
+     *
+     * Do NOT set this to 1 (Bellman-Ford). Value 1 is the *difference-logic-only*
+     * engine: it is faster on the diff-logic subset, but this model also contains
+     * genuine non-difference-logic constraints — the Σ ite(...) counting sums
+     * (shadow_len cap, the LSQ per-stream count, and inflight). Bellman-Ford
+     * cannot represent those; at small N it merely warns ("smt.diff_logic:
+     * non-diff logic expression ..."), but at the default N=12 the sums grow and
+     * it hard-aborts with "Overflow encountered when expanding vector". Simplex
+     * (=2) is complete for this model and is what earlier notes meant by "the
+     * Simplex core." */
+    sol.set("arith.solver", (unsigned)2);
 
     // Synthesized workload: arrivals A, stream ids K, read/write RW, bank tags
     std::vector<expr> A, K, RW, Bank;

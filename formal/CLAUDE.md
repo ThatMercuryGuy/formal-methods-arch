@@ -28,13 +28,22 @@ The optional first CLI argument sets the solver timeout in seconds (default 60,
 `0` = no timeout). It applies to both the discovery `check()` and every
 maximization probe, so a larger value lets the worst-case search climb further.
 
-**Solver tuning (recent optimization).** The code now sets `sol.set("arith.solver", 1)`,
-which switches Z3 to the Simplex-based arithmetic core instead of the default
-conflict-driven one. This is a **search strategy only** (model-preserving), and
-**measured 2x+ faster** across all benchmark configs. For example, the default
-`SPEC=1/NB=2` run that timed out at 60s now terminates in ~34s with the proved
-maximum found. The Simplex core's bound propagation outperforms the default's
-conflict-driven row generation on this model's difference-logic-dominated structure.
+**Solver tuning.** The code sets `sol.set("arith.solver", 2)`, which selects Z3's
+Simplex-based arithmetic core instead of the default LRA core (`=6`). This is a
+**search strategy only** (model-preserving), and is faster on this model
+(e.g. `SPEC=1/N=8` proves its maximum in ~45s vs ~68s on the default) because the
+model is dominated by difference-logic-style definitional equalities (`St`/`E`/`Aeff`
+chains) that Simplex bound propagation handles well.
+
+**Do NOT set `arith.solver=1`.** Value `1` is Z3's Bellman-Ford *difference-logic-
+only* engine. It is genuinely faster on the pure diff-logic subset, and earlier
+notes here mislabeled it as "the Simplex core" — but it is **incomplete for this
+model**, which also contains genuine non-difference-logic constraints: the
+`Σ ite(...)` counting sums (`shadow_len` cap, the LSQ per-stream count, and
+`inflight`). Bellman-Ford cannot represent those. At small `N` it merely warns
+(`smt.diff_logic: non-diff logic expression ...`), but at the default `N=12` those
+sums grow and it **hard-aborts** with `Overflow encountered when expanding vector`.
+Simplex (`=2`) is the complete, non-crashing engine that earlier notes intended.
 
 ## Where to change things
 
@@ -360,12 +369,15 @@ alone breaks the dogma without needing bank contention.
 
 ## Optimizations (completed, model-preserving)
 
-- **Solver tuning: Simplex-based arithmetic core** — switched from Z3's default
-  conflict-driven arithmetic to the Simplex-based one via `sol.set("arith.solver", 1)`.
-  Measured **2x+ speedup** across all benchmark configs. The model's dominance of
-  difference-logic-style definitional equalities (thousands of `St`/`E`/`Aeff` chains)
-  plays to Simplex bound propagation's strengths; the default's conflict-driven row
-  generation is slower on this problem. Model-preserving — search strategy only.
+- **Solver tuning: Simplex-based arithmetic core** — selects Z3's Simplex core
+  (`sol.set("arith.solver", 2)`) instead of the default LRA core (`=6`). Faster on
+  this model (e.g. `SPEC=1/N=8`: ~45s vs ~68s) because it is dominated by
+  difference-logic-style definitional equalities (thousands of `St`/`E`/`Aeff`
+  chains) that play to Simplex bound propagation's strengths. Model-preserving —
+  search strategy only. NOTE: `arith.solver=1` (Bellman-Ford, diff-logic only) is
+  faster still on the diff-logic subset but is **incomplete** here — the `Σ ite(...)`
+  counting sums are not difference logic, so it hard-aborts at the default `N=12`
+  (`Overflow encountered when expanding vector`). Use `2`, not `1`.
 - **Monotone tightening without push/pop** — the maximization loop now asserts
   strictly increasing lower bounds on `Delta` directly into the solver (no push/pop).
   This **retains learned lemmas** across probes, which is a large win for the final,
