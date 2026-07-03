@@ -78,12 +78,10 @@ bool_to_int(context& c, const expr& b)
 
 struct Timeline
 {
-  std::vector<expr> present;        // channel presentation (MSHR gating)
   std::vector<expr> chan_free;      // channel-free time (skips non-live shadow)
   std::vector<expr> service_start;  // service start (admission)
   std::vector<expr> live;           // reaches bus? (bool)
   std::vector<expr> service_end;    // service end
-  std::vector<expr> mshr_release;   // MSHR release time (service_end, or resolve if squashed pre-issue)
   expr              resolve;        // branch-resolve cycle
   expr              completion;     // system cycles (max correct-path service_end)
   explicit Timeline(context& c) : resolve(c.int_val(0)), completion(c.int_val(0)) {}
@@ -101,29 +99,19 @@ build_machine(context& c, solver& sol,
   using namespace cfg;
   Timeline tl(c);
 
-  // Declare a named per-request const, assert it equals rhs, store it, return it.
-  // Naming each quantity keeps the encoding definitional (Simplex-friendly).
-  auto def_int = [&](std::vector<expr>& v, const char* base, int j, const expr& rhs)
-    {
-      expr e = c.int_const((base + ("_" + tag + "_" + std::to_string(j))).c_str());
-      sol.add(e == rhs);
-      v.push_back(e);
-      return e;
-    };
-  auto def_bool = [&](std::vector<expr>& v, const char* base, int j, const expr& rhs)
-    {
-      expr e = c.bool_const((base + ("_" + tag + "_" + std::to_string(j))).c_str());
-      sol.add(e == rhs);
-      v.push_back(e);
-      return e;
-    };
-  // Name a scalar (not stored in a Timeline vector): const == rhs, definitional.
+  // Name a quantity as a fresh const asserted equal to rhs. Naming each quantity
+  // keeps the encoding definitional (Simplex-friendly). The int/bool pair returns
+  // a bare named const; the def_* pair additionally stores it in a Timeline vector.
   auto name_int = [&](const std::string& nm, const expr& rhs)
-    {
-      expr e = c.int_const(nm.c_str());
-      sol.add(e == rhs);
-      return e;
-    };
+    { expr e = c.int_const(nm.c_str());  sol.add(e == rhs); return e; };
+  auto name_bool = [&](const std::string& nm, const expr& rhs)
+    { expr e = c.bool_const(nm.c_str()); sol.add(e == rhs); return e; };
+  auto qual = [&](const char* base, int j)
+    { return base + ("_" + tag + "_" + std::to_string(j)); };
+  auto def_int = [&](std::vector<expr>& v, const char* base, int j, const expr& rhs)
+    { expr e = name_int(qual(base, j), rhs);  v.push_back(e); return e; };
+  auto def_bool = [&](std::vector<expr>& v, const char* base, int j, const expr& rhs)
+    { expr e = name_bool(qual(base, j), rhs); v.push_back(e); return e; };
 
   expr resolve = c.int_const(("resolve_" + tag).c_str());  // branch-resolve cycle (pinned below)
   tl.resolve = resolve;
@@ -144,8 +132,8 @@ build_machine(context& c, solver& sol,
       expr min_free = slot[0];
       for (int s = 1; s < window; ++s)
         min_free = zmin(min_free, slot[s]);
-      min_free = name_int("minfree_" + tag + "_" + std::to_string(j), min_free);
-      expr present = def_int(tl.present, "present", j, zmax(arrival[j], min_free));
+      min_free = name_int(qual("minfree", j), min_free);
+      expr present = name_int(qual("present", j), zmax(arrival[j], min_free));
 
       // Pipelined admission. chan_free skips non-live shadow (killed in the issue
       // queue, so it never occupies the bus).
@@ -165,7 +153,7 @@ build_machine(context& c, solver& sol,
 
       // MSHR release: a squashed request that never issued frees its slot at resolve;
       // otherwise it holds to completion (an in-flight miss cannot be un-sent).
-      expr mshr_release = def_int(tl.mshr_release, "mshr_release", j,
+      expr mshr_release = name_int(qual("mshr_release", j),
               z3::ite(squashed[j] && !live, resolve, service_end));
 
       // Hand j's entry back into the earliest-free slot (lowest index achieving the
