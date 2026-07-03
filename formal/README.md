@@ -115,9 +115,9 @@ request `j` consume `i`'s result?), turned into a timing constraint through a
 causality loop `Aeff[j] = max(A[j], max{ E[i]+1 : Dep[i][j] })`, bounded to a
 reorder window `ROB_SIZE`, with the concurrently-independent requests in that
 window capped at `MAX_LSQ_MLP`. It does no work on either anchor: with dependencies
-available the guard (no shadow, `N=12`) stays **UNSAT** and the falsifier `N=8`
-still proves the **same maximal `Delta=5`** — Z3 has dependencies on hand to reach
-`Delta≥6` and cannot. An LSQ cap is moreover a pure *restriction* — adding a
+available the guard (no shadow) stays **UNSAT** and the falsifier still proves the
+**same maximal `Delta=5`** — Z3 has dependencies on hand to reach `Delta≥6` and
+cannot. An LSQ cap is moreover a pure *restriction* — adding a
 constraint only narrows the search, so it can hide counterexamples but never create
 one. Requests present directly at their arrival `A[j]`. If a future regime
 (`RESOLVE_DELAY>0`, larger `N`) yields a witness that turns on a dependency, add it
@@ -166,8 +166,22 @@ bounds both the discovery query and each maximization probe.
 
 ## Results (6 vs 2 MSHRs)
 
-See [RESULTS.md](RESULTS.md) for the full measured results, including the
-wrong-path-speculation falsifier and its hand-verified witness.
+Two anchors, both at the default `N=12` (proved, not timeout lower bounds):
+
+- **Guard — empty shadow (`MAX_SHADOW=0`) → UNSAT.** The pure pipelined bus is
+  monotone in `W`, so more MLP is never worse. This is the strict-generalization
+  guard.
+- **Speculation on → SAT, `Delta = 5` (proved maximum, ~3 s).** Wrong-path
+  speculation falsifies the dogma.
+
+**Hand-verified witness.** Z3 mispredicts a branch at `BR=2` with a 4-request
+shadow `Sq = {3,4,5,6}`, resolving at `R=26`. The wide machine (W=6) issues **all
+four** shadow requests to the bus before resolve (`St[j] < R`), while the narrow
+machine (W=2) is MSHR-gated and issues only **one**. Those three extra wasted
+admissions shove the wide machine's correct-path tail 5 cycles later
+(`T_High=65 > T_Low=60`). `Delta = 5` emerges purely from `W` through the schedule
+and is **proved maximal** — no workload at `N=12` yields `Delta ≥ 6`. (Absolute `T`
+depends on `B`/`G`/`TT`; the load-bearing quantity is `Delta`.)
 
 ## Configuration
 

@@ -2,16 +2,16 @@
 
 Read `CLAUDE.md` (the "Critical modeling fact" section) and the README "Results"
 section before starting. Strategy B (wrong-path speculation) is **done, measured,
-and documented** — hand-verified with a proved maximal `Delta=5` at `N=8`. It is
+and documented** — hand-verified with a proved maximal `Delta=5` at `N=12`. It is
 the **only** anti-MLP mechanism in the model, the one that falsifies the dogma, and
 it is always on. With the shadow forced empty (`MAX_SHADOW=0`) the channel is a
 pure pipelined bus, monotone in `W`, and the query is UNSAT (the guard).
 
 Two mechanisms are deliberately *not* modeled because they do no work on the
-falsification — see "Why convex queueing contention is not a falsifier" and "Why a
-dependency subsystem is not an amplifier" in RESULTS.md. Do not add either
-speculatively; §4 tracks contention as a possible future *second* falsifier, an
-open question rather than the current focus.
+falsification — see "Not modeled: convex queueing contention" and "Not modeled: a
+dependency subsystem" in README.md. Do not add either speculatively; §4 tracks
+contention as a possible future *second* falsifier, an open question rather than
+the current focus.
 
 ---
 
@@ -106,9 +106,9 @@ pattern**. For each survivor of §1:
 ## 4. (Deferred) Contention as a *second* falsifier — open question
 
 Convex queueing contention does not falsify on its own (UNSAT with the shadow
-empty, contention on or off; RESULTS.md). To be a genuine second mechanism it would
-have to flip SAT in isolation, which a bounded two-tier ramp does not. If this
-direction is pursued:
+empty, contention on or off; see README.md "Not modeled: convex queueing
+contention"). To be a genuine second mechanism it would have to flip SAT in
+isolation, which a bounded two-tier ramp does not. If this direction is pursued:
 
 - A *bounded* piecewise-linear ramp (free below `C = B/G`, `+PEN_LO` past `C`,
   `+PEN_HI` more past `C2 = C+2`, flat linear forever after) structurally
@@ -187,5 +187,3 @@ per-field print code. Auto-hide any quantity that is uniform to keep the view le
   reordering *together*, not separately.
 - **Remaining speculation sweep** — `RESOLVE_DELAY` variants; report whether each Δ
   is **proved maximal** or a timeout **lower bound**.
-- **Re-confirm the `N=8` proved-max at `N=12`** — the proof is currently only for
-  `N=8` (max-Δ is non-decreasing in `N`).

@@ -32,7 +32,7 @@ maximization probe, so a larger value lets the worst-case search climb further.
 **Solver tuning.** The code sets `sol.set("arith.solver", 2)`, which selects Z3's
 Simplex-based arithmetic core instead of the default LRA core (`=6`). This is a
 **search strategy only** (model-preserving), and is faster on this model
-(e.g. `N=8` proves its maximum in ~45s vs ~68s on the default) because the
+(e.g. `N=12` proves its maximum in ~3.1s vs ~3.9s on the default) because the
 model is dominated by difference-logic-style definitional equalities (`St`/`E`
 chains) that Simplex bound propagation handles well.
 
@@ -142,10 +142,10 @@ a shared data-dependency matrix `Dep[i][j]` (does request `j` consume `i`'s
 result?), turned into a timing constraint through an `Aeff[j] = max(A[j], max{
 E[i]+1 : Dep[i][j] })` causality loop, bounded to a reorder window `ROB_SIZE`, with
 the number of mutually-independent requests in that window capped at `MAX_LSQ_MLP`
-(a second `Σ ite` sum). It does no work on either anchor: the guard (empty shadow,
-`N=12`) stays **UNSAT** and the falsifier `N=8` still proves the **same maximal
-`Delta=5`** — with dependencies available, Z3 could try to reach `Delta≥6` through
-them and cannot. In principle it *could* bear on the result — with speculation on,
+(a second `Σ ite` sum). It does no work on either anchor: the guard (empty shadow)
+stays **UNSAT** and the falsifier still proves the **same maximal `Delta=5`** —
+with dependencies available, Z3 could try to reach `Delta≥6` through them and
+cannot. In principle it *could* bear on the result — with speculation on,
 completion is not monotone in `W`, so a dependency reading the machine's own `E[i]`
 can propagate a wrong-path-induced delay onto a correct-path consumer — but that
 amplifier does no measurable work at these bounds, and an LSQ cap is a pure
@@ -243,7 +243,7 @@ narrow window is MSHR-gated and never reaches the shadow requests on the bus.
 
 - guard (no shadow), `N=12` → **UNSAT** (strict-generalization guard: the pure
   pipelined bus is monotone in `W`, so more MLP is never worse ✓)
-- speculation on, `N=8` → **SAT, `Delta = 5` (proved maximum)** — the falsifier
+- speculation on, `N=12` → **SAT, `Delta = 5` (proved maximum, ~3 s)** — the falsifier
 
 With speculation as the sole anti-MLP mechanism, a mispredicted branch falsifies
 the dogma with a **proved** maximum deviation of 5 cycles. A wide window (W=6)
@@ -251,27 +251,27 @@ issues deeper into the wrong path before the branch resolves, wasting bus
 admissions and delaying correct-path completion by 5 cycles versus the narrow
 window (W=2), which is MSHR-gated and never reaches the shadow requests on the bus.
 
-### Proved-maximal witness: wrong-path speculation (`N=8`)
+### Proved-maximal witness: wrong-path speculation (`N=12`)
 
 Hand-verified and proved maximal. Z3 mispredicts a branch at `BR=2` with a 4-request
-shadow `Sq = {3,4,5,6}`.
+shadow `Sq = {3,4,5,6}`, resolving at `R=26`.
 
-- **HighMLP (W=6)** issues **two** wrong-path requests to the bus before resolve
-  (`St[j] < R`); wrong-path issue depth = 2.
+- **HighMLP (W=6)** issues **all four** wrong-path requests to the bus before
+  resolve (`St[j] < R`); wrong-path issue depth = 4.
 - **LowMLP (W=2)** is MSHR-gated: it issues only **one** shadow request before the
   window stalls the rest until after resolve; wrong-path issue depth = 1.
 
-That extra wasted admission on the wide machine shoves its correct-path tail later,
-so that `Delta = 5` (`T_High=39` vs `T_Low=34`) emerges purely from `W` through the
-schedule. **This is proved maximal** — no configuration at `N=8` with this setup
-yields `Delta ≥ 6`. (Absolute `T` values depend on `B`/`G`/`TT`; the load-bearing
-quantity is `Delta`.)
+Those three extra wasted admissions on the wide machine shove its correct-path tail
+later, so that `Delta = 5` (`T_High=65` vs `T_Low=60`) emerges purely from `W`
+through the schedule. **This is proved maximal** — no configuration at `N=12` with
+this setup yields `Delta ≥ 6`. (Absolute `T` values depend on `B`/`G`/`TT`; the
+load-bearing quantity is `Delta`.)
 
 ## Optimizations (completed, model-preserving)
 
 - **Solver tuning: Simplex-based arithmetic core** — selects Z3's Simplex core
   (`sol.set("arith.solver", 2)`) instead of the default LRA core (`=6`). Faster on
-  this model (e.g. `N=8`: ~45s vs ~68s) because it is dominated by
+  this model because it is dominated by
   difference-logic-style definitional equalities (thousands of `St`/`E`
   chains) that play to Simplex bound propagation's strengths. Model-preserving —
   search strategy only. NOTE: `arith.solver=1` (Bellman-Ford, diff-logic only) is
@@ -291,13 +291,12 @@ quantity is `Delta`.)
   assumes in-order completion via `E[j-W]`).
 - **Remaining sweep (complete maximality at larger `N`)** — `RESOLVE_DELAY`
   variants; report whether Δ-max is proved or a timeout lower bound.
-- **Re-confirm the `N=8` proved-max at `N=12`** (max-Δ is non-decreasing in `N`).
 
 ## Documentation policy
 
 **Docs describe the code as it is now, not its history.** Git is the changelog.
 Do not leave "used to be X," "removed Y," "earlier version had Z," or "renamed from
-W" artifacts in any doc (`CLAUDE.md`, `README.md`, `RESULTS.md`, `TODO.md`) or in
+W" artifacts in any doc (`CLAUDE.md`, `README.md`, `TODO.md`) or in
 code comments. When you change the model, rewrite the affected prose in place so it
 reads as though the current design was always the design. The one exception is
 *forward-looking* design guidance — "do not add X, because it does no work / breaks
