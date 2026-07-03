@@ -1,0 +1,17 @@
+DOGMA: It's always better to have higher memory level parallelism (i.e. core should always issue as many requests to
+the memory controller as it can).
+
+ASSUMPTIONS:
+- Service latency of memory request bounded (here [8, 16] cycles)
+- Fixed memory controller request admission gap
+- Fixed maximum number of speculative loads (kept as high as possible to maintain honesty)
+- Fixed branch resolution delay upon conditional load return
+- Once a request is issued, the corresponding MSHR is occupied until it is serviced
+
+COUNTEREXAMPLE: With speculative execution on the wrong-path with large number of consecutive loads,
+the High_MLP machine issues all loads until its MSHRs are all occupied, whereas the Low_MLP machine having
+fewer MSHRs issues fewer of those loads. Then, the branch is resolved and the remaining wrong-path loads for the
+Low_MLP machine are never issued, which means as soon as the few wrong-path loads are serviced, the Low_MLP machine
+has all its MSHRs free again. However, the High_MLP machine having issued more requests has to endure the higher
+cumulative latency for all of those to be serviced and thus frees up its MSHRs slower, meaning stalls are induced
+in the High_MLP system that were avoided by the Low_MLP system.
