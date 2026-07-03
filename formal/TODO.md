@@ -2,18 +2,23 @@
 
 Read `CLAUDE.md` (the "Critical modeling fact" section) and the README "Results"
 section before starting. Strategy B (wrong-path speculation) is **done, measured,
-and documented** — hand-verified with a proved maximal `Delta=5` at
-`CONTENTION=0, SPEC=1, N=8`. It is the mechanism that **falsifies** the dogma; the
-convex queueing penalty (`CONTENTION=1`) is a genuine MLP *cost* but does not
-falsify on its own (contention alone is UNSAT — the benefit covers the cost and
-backpressure bounds divergence).
+and documented** — hand-verified with a proved maximal `Delta=5` at `N=8`. It is
+the **only** anti-MLP mechanism in the model, the one that falsifies the dogma, and
+it is always on. With the shadow forced empty (`MAX_SHADOW=0`) the channel is a
+pure pipelined bus, monotone in `W`, and the query is UNSAT (the guard).
+
+Two mechanisms are deliberately *not* modeled because they do no work on the
+falsification — see "Why convex queueing contention is not a falsifier" and "Why a
+dependency subsystem is not an amplifier" in RESULTS.md. Do not add either
+speculatively; §4 tracks contention as a possible future *second* falsifier, an
+open question rather than the current focus.
 
 ---
 
-## 0. The new goal (this changes the search objective)
+## 0. The goal (this is the search objective)
 
-The project has shifted from *"can Z3 falsify the dogma?"* (answered: yes, via
-wrong-path speculation) to a sharper aim:
+Beyond the existence proof (Z3 falsifies the dogma via wrong-path speculation), the
+sharper aim is:
 
 > **Find a workload Z3 synthesizes that maps onto a buildable real-life scenario
 > AND that a human architect would not have intuitively predicted.**
@@ -21,7 +26,7 @@ wrong-path speculation) to a sharper aim:
 This is a different objective from **Δ-max**. The largest-Δ witness is not
 necessarily the most interesting one. Concretely:
 
-- The current `SPEC=1` witness (wrong-path read steals a bus slot and
+- The current witness (wrong-path read steals a bus slot and
   forces a R→W turnaround) is **real but too intuitive** — "a doomed load steals
   bus bandwidth" is a first-order answer any architect would give. Good existence
   proof, weak as a *surprise*.
@@ -42,7 +47,7 @@ There is a tension to manage explicitly:
 ## 1. Next step: add a robustness filter to the search (highest priority)
 
 Δ-max chases knife-edge timing artifacts (the current witness hinges on a
-*one-cycle* margin, `St[6]=52 < R=53`). Those are real physics but **not
+*one-cycle* margin, `St[6] < R`). Those are real physics but **not
 constructible** — you cannot hand a colleague a C program that reliably reproduces
 a cycle-exact margin. Robust witnesses are both more surprising (structural, not
 luck) and more constructible.
@@ -62,25 +67,22 @@ existing Δ-max loop — add a robustness gate on top, or a second search mode).
 ## 2. Mine the regimes where ≥3-hop chains live
 
 The intuitive witnesses come from 2-hop chains (wrong-path req → bus slot → tail).
-The surprising ones live in the **feedback and cross-thread** regimes:
+The surprising ones live in the deeper interaction of speculation depth with the
+schedule:
 
-- **Backpressure non-monotonicity** (`CONTENTION=1`). The closed loop already does
-  counterintuitive things (the old completion-only `Δ=72` config became UNSAT once
-  `Pen` fed admission). Hunt for a witness where the wide window is slower
-  *specifically because* its contention penalty fed back into admission and
-  **reordered which requests collide** — a chain "more MLP → earlier admission →
-  higher inflight → penalty → later admission of a *different* request" that a human
-  reasoning "more overlap = faster" would not trace. (Note: contention alone is
-  UNSAT at the default config, so such a witness likely needs `SPEC=1` too — the
-  interesting question is whether the feedback *amplifies* the speculation effect.)
-- **Cross-thread interference** (`S=2`, already available). `inflight` spans all
-  streams. Find a witness where the wide window's aggression on **stream A** floods
-  the channel and delays **stream B's** critical request — the victim is not the
-  speculating thread. Maps directly to real SMT / multicore bandwidth contention and
-  is genuinely non-obvious.
-- **Phase-dependent "helpful-looking" request.** A request that looks like it should
-  help (arrives early, would prefetch) but lands at the wrong schedule phase and is
-  *good for the narrow machine, bad for the wide one* — purely through timing phase.
+- **Speculation-depth vs. turnaround interplay.** The current witness spends its
+  wasted admission on a single R→W bubble. Hunt for a witness where the wide
+  window's *deeper* wrong-path issue reorders the read/write pattern of the
+  **correct-path** tail — a chain "more MLP → deeper shadow → different `TT`
+  bubble placement on real requests → later correct-path completion" that a human
+  reasoning "wrong-path loads just waste one slot" would not trace.
+- **Phase-dependent "helpful-looking" request.** A request that looks like it
+  should help (arrives early, would prefetch) but lands at the wrong schedule
+  phase and is *good for the narrow machine, bad for the wide one* — purely
+  through timing phase and MSHR gating.
+- **`RESOLVE_DELAY` regimes.** A later branch resolve (`RESOLVE_DELAY > 0`) widens
+  the window in which the wide machine can issue shadow requests. Sweep it and
+  look for a witness whose structure (not just Δ) changes qualitatively.
 
 ## 3. For each candidate witness — construct the real scenario
 
@@ -88,7 +90,7 @@ A witness only counts for the new goal if you can **name the hardware access
 pattern**. For each survivor of §1:
 
 - Tell the story in architectural terms: pointer-chase colliding with a streaming
-  write? an SMT co-runner? a specific branch+load idiom?
+  write? a specific branch+load idiom?
 - If you **cannot** tell a buildable hardware story, **discard it regardless of Δ.**
 - Cite the relevant prior art so the delta is honest:
   - Mutlu, Kim, Armstrong, Patt — wrong-path memory references (WMPI 2004 /
@@ -101,6 +103,80 @@ pattern**. For each survivor of §1:
     while leaving correct-path MLP wide) — protecting correct-path *bandwidth*, not
     energy. Verify these against the PDFs before leaning on the distinction.
 
+## 4. (Deferred) Contention as a *second* falsifier — open question
+
+Convex queueing contention does not falsify on its own (UNSAT with the shadow
+empty, contention on or off; RESULTS.md). To be a genuine second mechanism it would
+have to flip SAT in isolation, which a bounded two-tier ramp does not. If this
+direction is pursued:
+
+- A *bounded* piecewise-linear ramp (free below `C = B/G`, `+PEN_LO` past `C`,
+  `+PEN_HI` more past `C2 = C+2`, flat linear forever after) structurally
+  under-models near-saturation regardless of constants. Real memory-controller
+  queueing is closer to **hyperbolic** — latency grows toward a singularity as
+  utilization approaches capacity (M/M/1-style).
+- Add a third, much steeper (or superlinear-in-pieces) segment past a second knee
+  `C3`, staying piecewise-linear so Z3's arithmetic core still handles it (avoid
+  true nonlinearity — it defeats the Simplex/diff-logic engine per CLAUDE.md's
+  solver notes).
+- It must be justified by a **measured SAT** in isolation, not added speculatively.
+  Absent that, speculation remains the sole mechanism and the model stays simple.
+
+---
+
+## (Tabled) Redesign the witness output for human interpretability
+
+The current SAT-witness dump (`mlp.cpp` `main`) prints the raw internal timeline
+variables — `A'`, `Cf`, `St`, `Live`, `E` — as terse numeric grids. It is
+unintelligible without an AI walking through it; the goal is output a human can
+interpret unaided.
+
+**Hard constraint (why this is non-trivial):** the printer must **not** hardcode
+the current model's story. Any prose that says "wrong-path read stole a slot and
+forced a R→W turnaround" is a shadow reimplementation of the physics that silently
+rots the moment the model changes (new mechanism, deleted turnaround, etc.). The
+output must be a **pure data transform over the model's own named quantities** —
+change the model and the view re-shapes itself. This kills the narrative-prose
+option outright.
+
+**What survives that constraint (agreed direction):**
+
+- **Layer 1 — visualize the shared workload (KEEP, agreed).** Everything Z3 chose
+  that is *identical* for both machines — `A`, `RW` (as R/W with turnaround
+  positions), `Sq`/`BR` (wrong-path shadow) — printed once, in *domain* terms.
+  This is interpretable precisely because it is not in the
+  internal-variable currency; it's the input the human reasons about. Both machines
+  share this (built once in `main`, passed to both `build_machine` calls), so
+  everything downstream differs *only* through `W`.
+
+- **Domain-level outcome = the bus schedule (leading candidate).** The internal
+  timeline vars are plumbing; the thing that physically *happens* is which request
+  occupies the bus, when, and which never get on. Render `St`/`E`/`Live` as bars on
+  a shared cycle axis, one lane per machine, with the `R` resolve line and R/W
+  turnaround bubbles marked (all derivable generically). You read the difference
+  physically — High's bus carries extra wrong-path bars that shove the correct-path
+  tail right — with no variable decoding. Still a pure transform of
+  `St`/`E`/`Live`, so it survives model changes.
+
+**Rejected during discussion:**
+- Narrative/prose summary (Layer "A") — requires re-deriving semantics; rots.
+- Per-request High−Low **delta grid** and the **argmax/finish-line** view
+  (Layers 2 & 3) — deemed unhelpful: they still speak in the internal-variable
+  currency (just diffed / max'd), which is exactly what's unintelligible today.
+
+**Open questions to resolve before implementing:**
+1. Is "what happened on the bus" the right domain-level outcome, or is the bus not
+   the mental model to lead with?
+2. How much annotation on the schedule (turnaround bubbles, `R` line) before it
+   tips from "showing the data" into "telling the answer."
+3. Fate of the raw internal grids: behind a `-v`/`--verbose` flag (leading choice),
+   always-appended, or removed.
+
+**Implementation note (generic machinery):** the `Timeline` struct is already the
+schema. A field registry (`{name, &vec, INT|BOOL}`) driving the printer means
+adding/removing a model quantity is a one-line edit and the output tracks it — no
+per-field print code. Auto-hide any quantity that is uniform to keep the view lean.
+
 ---
 
 ## Open items deferred from the modeling roadmap (not the current focus)
@@ -109,7 +185,7 @@ pattern**. For each survivor of §1:
   until service order is `W`-dependent (symbolic permutation — the expensive piece),
   so it only becomes honest physics *together with* reordering. Add the tag and
   reordering *together*, not separately.
-- **Remaining SPEC sweep** — `RESOLVE_DELAY` variants; report whether each Δ is
-  **proved maximal** or a timeout **lower bound**.
-- **Re-confirm the `N=8` proved-max at `N=12`** for `CONTENTION=0, SPEC=1` — the
-  proof is currently only for `N=8` (max-Δ is non-decreasing in `N`).
+- **Remaining speculation sweep** — `RESOLVE_DELAY` variants; report whether each Δ
+  is **proved maximal** or a timeout **lower bound**.
+- **Re-confirm the `N=8` proved-max at `N=12`** — the proof is currently only for
+  `N=8` (max-Δ is non-decreasing in `N`).
