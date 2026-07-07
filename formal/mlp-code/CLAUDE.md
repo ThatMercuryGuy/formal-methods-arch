@@ -344,8 +344,7 @@ from `window` through the schedule (both machines see the identical shared
 `latency[]`).
 
 **Resolve caveat (the search's own choice, not a rig).** `resolve` is per-machine
-and pinned to each machine's *own* `service_end[branch]` (see the `resolve_sel`
-loop in `build_machine`), so a
+and pinned to each machine's *own* `service_end[branch]` (see `pin_resolve`), so a
 wide window that completes the condition-load earlier genuinely resolves the branch
 earlier — the "more MLP resolves the branch faster" benefit is fully modeled and
 available. But the solver, given free choice of `branch`, consistently parks it
