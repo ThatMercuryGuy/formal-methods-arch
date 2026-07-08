@@ -53,6 +53,17 @@ expression ...`), but at the default `N=12` that sum grows and it **hard-aborts*
 with `Overflow encountered when expanding vector`. Simplex (`=2`) is the complete,
 non-crashing engine.
 
+**Do NOT replace the `shadow_len` cap with `z3::atmost` (native cardinality).** It is
+a tempting condense — the `Σ ite(...)` sum plus `<= MAX_SHADOW` is exactly an
+at-most-k constraint, and Z3 has `z3::atmost` for it. It is a **measured regression**:
+A/B at the default config (`N=12`, `MAX_SHADOW=8`, min-of-3) makes the discovery query
+(`Delta>0`, which runs on *every* invocation) **~3× slower** (3.4 s → 10.9 s) and turns
+two previously-solvable maximization probes (`Delta>=5`, `Delta>=10`) into 15 s
+timeouts. The reason mirrors the `arith.solver` story: the whole model lives in the
+Simplex arithmetic core, and the `Σ ite` sum composes inside that one theory, whereas
+`z3::atmost` dispatches to a **separate pseudo-boolean engine** — adding a second
+reasoning domain instead of staying in the tuned one. Keep the arithmetic sum.
+
 ## Where to change things
 
 All knobs are in `namespace cfg` at the top of `mlp.cpp`:
@@ -81,6 +92,26 @@ All knobs are in `namespace cfg` at the top of `mlp.cpp`:
 
 Changing the comparison (e.g. "4 vs 2 MSHRs") means editing `WINDOW_HIGH` /
 `WINDOW_LOW` only — nothing else.
+
+**Code layout.** `mlp.cpp` is organized top-to-bottom as: `namespace cfg` (knobs) →
+small expression helpers (`zmax`, `zmin`, `bool_to_int`) → the `Timeline` data holder
+→ `Namer` (definitional naming: every modeled quantity is a fresh const asserted equal
+to its defining expression, which is what keeps the encoding Simplex-friendly) → the
+per-request timeline **stages** → the two workload builders → the CLI/reporting block.
+
+The per-request physics is split into one function per discrete stage, all invoked in
+program order by the `build_machine` loop; **the order these emit their `sol.add`s is
+the model**, so preserve it when editing:
+`occupancy_gate` (MSHR-slot gating → `present`) → `admit` (pipelined channel →
+`chan_free`, `service_start`) → `add_service` (`live`, `service_end`) →
+`mshr_release` → `writeback_slot` (hand the entry back into the earliest-free slot).
+After the loop, `pin_resolve` pins `resolve = service_end[branch] + RESOLVE_DELAY` and
+`compute_completion` takes the max `service_end` over correct-path requests. The shared
+workload is built by `synthesize_workload` (arrivals + latencies) and `add_speculation`
+(branch, `squashed[]`, contiguity, the `shadow_len` cap). Everything from `parse_timeout`
+down is CLI + witness printing (`print_*` helpers, `maximize_delta`) and touches no
+model term. To add a per-request quantity, add a stage function and a `Timeline` vector;
+to change the objective search, edit `maximize_delta` only.
 
 ## Critical modeling fact — do not regress this
 
@@ -406,6 +437,9 @@ record of a past removal.
 - **Braces:** GNU Allman style — opening brace on the next line for all blocks,
   indented by two spaces. Single-statement if/else blocks may omit braces for
   readability (e.g., `if (cond) statement;`).
+- **Function declarations:** return type on the *same* line as the function name
+  (`static expr admit(...)`, not the type on its own line). Wrap long parameter lists
+  onto continuation lines aligned under the first parameter.
 - **Indentation:** Two spaces consistently (matching the existing `namespace cfg`
   block and throughout the file).
 - **Line wrapping:** Keep lines reasonably compact; prefer semantic grouping over

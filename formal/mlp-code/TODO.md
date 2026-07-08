@@ -126,8 +126,9 @@ isolation, which a bounded two-tier ramp does not. If this direction is pursued:
 
 ## (Tabled) Redesign the witness output for human interpretability
 
-The current SAT-witness dump (`mlp.cpp` `main`) prints the raw internal timeline
-variables — `A'`, `Cf`, `St`, `Live`, `E` — as terse numeric grids. It is
+The current SAT-witness dump (the `print_*` helpers in `mlp.cpp`) prints the raw
+internal timeline variables — `A'`, `Cf`, `St`, `Live`, `E` — as terse numeric
+grids. It is
 unintelligible without an AI walking through it; the goal is output a human can
 interpret unaided.
 

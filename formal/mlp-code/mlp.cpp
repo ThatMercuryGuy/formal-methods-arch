@@ -1,14 +1,3 @@
-/*
- * Bounded Model Checking engine for the "more MLP is always better" dogma.
- * Unrolls UNROLL_DEPTH memory requests on two machines (System_HighMLP,
- * System_LowMLP) that share the same synthesized workload but differ only in
- * MSHR window (WINDOW_HIGH vs WINDOW_LOW). Seeks workloads where
- * completion_HighMLP > completion_LowMLP by modeling pipelined finite bandwidth,
- * variable memory latency (reordered completion), and wrong-path speculation waste.
- *
- * Build: g++ -std=c++23 mlp.cpp -lz3 -o mlp -O3 -march=native
- */
-
 #include <z3++.h>
 #include <vector>
 #include <string>
@@ -19,45 +8,32 @@ using z3::expr;
 using z3::context;
 using z3::solver;
 
-// ---------------------------------------------------------------------------
 // Tunable parameters of the unrolled model.
-// ---------------------------------------------------------------------------
 namespace cfg
 {
-  constexpr int UNROLL_DEPTH    = 12;   // Number of memory requests unrolled.
-  constexpr int ARRIVAL_HORIZON = 64;   // Upper bound for synthesized arrival times.
+  constexpr int UNROLL_DEPTH    = 16;   // Number of memory requests unrolled.
+  constexpr int ARRIVAL_HORIZON = 128;   // Upper bound for synthesized arrival times.
 
-  // ---- Variable memory latency (shared workload; reorders completion) -------
-  // Per-request latency is solver-chosen in [LAT_MIN, LAT_MAX] and shared by both
-  // machines: a row-buffer hit returns fast, a row-miss (precharge+activate+CAS)
-  // slow. A later request drawing a short latency can complete before an earlier
-  // one that drew a long latency -- this IS the memory controller reordering
-  // completions, so MSHR gating is occupancy-based (order of releases is not the
-  // order of issue).
+  // Variable Memory Latency
   constexpr int LAT_MIN = 6;    // row-buffer hit (fast return).
   constexpr int LAT_MAX = 18;   // row-miss: precharge+activate+CAS (slow return).
 
-  // ---- Pipelined finite-bandwidth channel (shared physics, both machines) --
-  constexpr int ADMISSION_GAP      = 2;  // Channel inter-admission gap (1/bandwidth), < LAT_MIN.
+  // Memory Controller Bandwidth Control
+  constexpr int ADMISSION_GAP = 2;
 
-  constexpr int WINDOW_HIGH = 4;    // System_HighMLP MSHR window (aggressive).
+  constexpr int WINDOW_HIGH = 8;    // System_HighMLP MSHR window (aggressive).
   constexpr int WINDOW_LOW  = 2;    // System_LowMLP MSHR window (throttled).
 
-  // Wrong-path speculation (Strategy B): mispredicted branch `branch` -> shadow
-  // `squashed[]` of wrong-path reqs, shared by both machines; per-machine issue
-  // depth emerges from service_start[j] < resolve only. completion counts
-  // correct-path completions. This is the sole anti-MLP mechanism and is always on.
+  //Wrong Path Speculation
   constexpr int MAX_SHADOW    = 8;   // Shadow-length cap (logged if binds).
-  constexpr int RESOLVE_DELAY = 3;   // resolve = service_end[branch] + this; models compare+redirect latency.
+  constexpr int RESOLVE_DELAY = 3;   // resolve = service_end[branch] + this;
 
   static_assert(ADMISSION_GAP < LAT_MIN,
                 "channel must pipeline: ADMISSION_GAP must be < LAT_MIN");
   static_assert(LAT_MIN <= LAT_MAX, "latency range must be non-empty");
 }
 
-// ---------------------------------------------------------------------------
-// Small helpers.
-// ---------------------------------------------------------------------------
+// Helpers
 static inline expr zmax(const expr& a, const expr& b)
 {
   return z3::ite(a >= b, a, b);
@@ -84,11 +60,7 @@ struct Timeline
   explicit Timeline(context& c) : resolve(c.int_val(0)), completion(c.int_val(0)) {}
 };
 
-// ---------------------------------------------------------------------------
-// Definitional naming. Each modeled quantity is a fresh const asserted equal to
-// its defining expression; this keeps the encoding definitional (Simplex-friendly).
-// `name_*` returns a bare named const; `def_*` also stores it in a Timeline vector.
-// ---------------------------------------------------------------------------
+// Definitional Naming
 struct Namer
 {
   context&    c;
@@ -107,18 +79,12 @@ struct Namer
     { expr e = name_bool(qual(base, j), rhs); v.push_back(e); return e; }
 };
 
-// ---------------------------------------------------------------------------
-// Per-request timeline stages (one discrete piece of the machine each). They are
-// invoked in program order by build_machine; the assertion order they produce is
-// the model.
-// ---------------------------------------------------------------------------
+/* Per-request timeline stages (one discrete piece of the machine each). They are
+   invoked in program order by build_machine; the assertion order they produce is
+   the model. */
 
-// MSHR occupancy state: `window` interchangeable slot registers, each holding the
-// cycle its entry next becomes free (initialized free at 0). Because latency varies,
-// completions reorder, so the freeing slot is NOT a fixed index -- gating is by
-// occupancy: a request presents once the EARLIEST slot frees. This reduces exactly
-// to the fixed-index gate when latency is constant (releases in issue order).
-static std::vector<expr> init_mshr_slots(context& c, int window)
+
+   static std::vector<expr> init_mshr_slots(context& c, int window)
 {
   std::vector<expr> slot;
   slot.reserve(window);
@@ -145,8 +111,7 @@ static Gate occupancy_gate(Namer& nm, const std::vector<expr>& slot,
   return { min_free, present };
 }
 
-// Pipelined admission. chan_free skips non-live shadow (killed in the issue queue,
-// so it never occupies the bus). Returns the request's service_start.
+
 static expr admit(Namer& nm, Timeline& tl, const expr& present, int j)
 {
   expr chan_free_rhs = present;
@@ -159,8 +124,6 @@ static expr admit(Namer& nm, Timeline& tl, const expr& present, int j)
                     j == 0 ? present : zmax(present, chan_free));
 }
 
-// Bus liveness (reaches the bus unless a shadow request that starts after resolve)
-// and service completion.
 static void add_service(Namer& nm, Timeline& tl, const expr& squashed_j,
                         const expr& resolve, const expr& service_start,
                         const expr& latency_j, int j)
@@ -169,8 +132,6 @@ static void add_service(Namer& nm, Timeline& tl, const expr& squashed_j,
   nm.def_int(tl.service_end, "service_end", j, service_start + latency_j);
 }
 
-// MSHR release: a squashed request that never issued frees its slot at resolve;
-// otherwise it holds to completion (an in-flight miss cannot be un-sent).
 static expr mshr_release(Namer& nm, const expr& squashed_j, const expr& live,
                          const expr& resolve, const expr& service_end, int j)
 {
@@ -178,9 +139,7 @@ static expr mshr_release(Namer& nm, const expr& squashed_j, const expr& live,
                      z3::ite(squashed_j && !live, resolve, service_end));
 }
 
-// Hand j's entry back into the earliest-free slot (lowest index achieving the min,
-// so ties replace exactly one) -- a canonical, deterministic assignment over the
-// interchangeable slots.
+
 static void writeback_slot(Namer& nm, std::vector<expr>& slot, const expr& min_free,
                            const expr& release, int window, int j)
 {
@@ -217,7 +176,7 @@ static expr compute_completion(Namer& nm, const Timeline& tl,
   return completion;
 }
 
-// Build per-machine timeline (window-parameterized on the shared workload).
+// Build per-machine timeline (window-parameterized on the shared workload)
 static Timeline build_machine(context& c, solver& sol,
                               const std::string& tag, int window,
                               const std::vector<expr>& arrival,
@@ -248,12 +207,7 @@ static Timeline build_machine(context& c, solver& sol,
   return tl;
 }
 
-// ---------------------------------------------------------------------------
-// Workload synthesis and the shared speculation constraints.
-// ---------------------------------------------------------------------------
 
-// Synthesized workload: arrivals `arrival` and per-request memory latency `latency`
-// (shared by both machines; completion order still diverges through `window` alone).
 static void synthesize_workload(context& c, solver& sol,
                                 std::vector<expr>& arrival,
                                 std::vector<expr>& latency)
@@ -272,8 +226,7 @@ static void synthesize_workload(context& c, solver& sol,
     sol.add(arrival[i] <= arrival[i + 1]);
 }
 
-// Wrong-path speculation: mispredicted branch `branch` and shadow `squashed[]`
-// (shared workload). Returns the branch index expr; fills `squashed`.
+// Wrong-path speculation
 static expr add_speculation(context& c, solver& sol, std::vector<expr>& squashed)
 {
   using namespace cfg;
@@ -300,8 +253,6 @@ static expr add_speculation(context& c, solver& sol, std::vector<expr>& squashed
 // CLI + reporting.
 // ---------------------------------------------------------------------------
 
-// Parse optional solver timeout (default 60s, CLI arg in seconds). Returns false
-// after printing usage on a malformed argument.
 static bool parse_timeout(int argc, char** argv, unsigned& timeout_ms)
 {
   timeout_ms = 60000u;
@@ -339,10 +290,7 @@ static void print_banner(unsigned timeout_ms)
             << "Query: exists workload with  completion_HighMLP > completion_LowMLP ?\n\n";
 }
 
-// Maximize Delta via incremental tightening. Each probe raises the floor
-// monotonically, so earlier bounds are implied and we assert directly (no push/pop)
-// -- this keeps Z3's learned lemmas for the final maximality proof instead of
-// discarding them. Updates `m` and `best` to the largest witness proven.
+// Maximize Delta via incremental tightening
 static void maximize_delta(solver& sol, const expr& Delta, z3::model& m, int64_t& best)
 {
   auto delta_of = [&](const z3::model& mm)
