@@ -158,9 +158,17 @@ def build_model(params):
                   cost_nine, cost_victim, l2_hits, l3_hits, victim_hits)
 
 
-# Assert the negated hypothesis (Victim strictly costlier than NINE) and search
-# for the trace that maximizes the gap. UNSAT means H holds up to this (N, K).
+# Assert the negated hypothesis (Victim strictly costlier than NINE). First a
+# plain SAT feasibility check (cheap); optimization is far more expensive, so
+# only if a counterexample provably exists do we build an Optimize and maximize
+# the gap. UNSAT on the feasibility check means H holds up to this (N, K).
 def solve_for_counterexample(bundle, params):
+    feasible = Solver()
+    feasible.add(bundle.constraints)
+    feasible.add(bundle.cost_victim > bundle.cost_nine)
+    if feasible.check() == unsat:
+        return feasible, unsat
+
     opt = Optimize()
     opt.add(bundle.constraints)
     opt.add(bundle.cost_victim > bundle.cost_nine)
