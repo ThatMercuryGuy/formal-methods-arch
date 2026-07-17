@@ -190,7 +190,6 @@ def report_result(opt, result, bundle, params):
         print("UNSAT: no trace makes Victim cost more than NINE.")
         print(f"Hypothesis C_victim <= C_NINE holds for ALL traces of length "
               f"N={params.N} over K={params.K} labels.")
-        print("This is a BOUNDED result for this (N, K), NOT a general proof.")
         return
 
     model = opt.model()
