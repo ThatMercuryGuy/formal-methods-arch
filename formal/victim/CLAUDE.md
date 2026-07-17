@@ -27,11 +27,19 @@ share the **exact same L2** (same ways `w2`, same strict-LRU policy).
   L3 is probed and updated (promote on L3 hit, DRAM-fill on L3 miss); on an L2
   hit L3 is untouched. Redundant: a line can live in both L2 and L3.
 
-- **Victim** `{ L2, victim-L3 }` — the L3-position structure is a victim cache.
-  A line enters it **iff** it was just evicted from L2 (never a direct DRAM
-  fill). On an L2 miss that hits the victim cache, the accessed line is **swapped
-  out** of the victim cache into L2 while L2's evicted line takes its place —
-  exclusive: no line is ever in both L2 and the victim cache at once.
+- **Victim** `{ L2, victim-L3 }` — the **entire L3** is managed as a victim
+  cache (as in industry, not a small separate structure beside L2). A line
+  enters it **iff** it was just evicted from L2 (never a direct DRAM fill). On an
+  L2 miss that hits the victim cache, the accessed line is **swapped out** of the
+  victim cache into L2 while L2's evicted line takes its place — exclusive: no
+  line is ever in both L2 and the victim cache at once.
+
+**Same-size L3 is definitional, not a fairness knob.** Both designs repurpose the
+*same* physical L3 storage, so `v == w3` **always**. Comparing different L3 sizes
+(`w3 != v`) is meaningless — any gap would be a capacity artifact, not the
+victim-vs-NINE structural difference. Likewise `w2` is shared. All latencies are
+equal across designs. Every gap must be attributable to *policy structure*
+alone.
 
 ### Cache representation
 
@@ -136,25 +144,38 @@ Search:        z3.Optimize, assert the negation (C_victim > C_NINE), maximize(ga
 
 ## Current state of `model.py` (DONE and verified)
 
-Implemented and tested on concrete values:
+The whole model is implemented and unit-verified. Only the end-to-end run +
+hand-check of the witness remains. Layers, in dependency order:
 
-- `Params` dataclass (`w2, w3, v, N, K, l2, l3, ld`).
-- `fresh_cache(name, num_ways, timestep)` → list of named Z3 Ints
-  (`L2_t3_slot0`, ...).
-- `init_empty(cache_state)` → constrains slots to distinct negative sentinels
-  `-1, -2, ...`.
-- `constrain_trace(access_sequence, K)` → each access in `[0, K)`.
-- `is_present(cache_state, line_label)` → Z3 Bool (hit).
-- `lru_line(cache_state)` → `cache_state[-1]`.
-- `updated_cache(cache_state, line_to_find, line_to_insert)` → the single
-  strict-LRU update, returned as a new list of Z3 expressions. This is the ONLY
-  cache-update logic in the whole model — reused for every structure.
+- **State scaffolding**: `Params` dataclass (`w2, w3, v, N, K, l2, l3, ld`);
+  `fresh_cache(name, num_ways, timestep)` → named Z3 Ints (`L2_t3_slot0`, ...);
+  `init_empty(cache_state)` → distinct negative sentinels `-1, -2, ...`;
+  `constrain_trace(access_sequence, K)` → each access in `[0, K)`.
+- **Primitives**: `is_present`, `lru_line`, `updated_cache` — the single
+  strict-LRU update (remove `line_to_find` if present, place `line_to_insert` at
+  MRU, else evict LRU), reused for every structure.
+- **Transitions**: `step_nine(l2_now, l3_now, access, l2_next, l3_next)` and
+  `step_victim(l2_now, victim_now, access, l2_next, victim_next)`. Each returns
+  `(constraints, l2_hit, mid_hit)`.
+- **Cost**: `access_cost(l2_hit, mid_hit, params)` — one function for both
+  designs.
+- **Assembly**: `build_model(params)` unrolls both designs over one shared
+  symbolic trace, returning a `Bundle` dataclass (constraints, access_sequence,
+  all trajectories, both cost sums, per-step hit-flag vectors). The gap
+  `cost_victim - cost_nine` is used inline at the `maximize` site (trivial
+  one-liners are inlined, not wrapped).
+- **Search + report**: `solve_for_counterexample(bundle, params)` (Optimize,
+  negated hypothesis, maximize gap) and `report_result(opt, result, bundle,
+  params)` (full witness on SAT with the hand-checkable hit-count difference;
+  bounded-result note on UNSAT).
 
-**Verification already run and passing** (concrete-value sanity check):
-- `init_empty` → `[-1, -2, -3]`.
-- `constrain_trace` rejects `access == K` (unsat).
-- `updated_cache` hit `[20,10,30,40]` (moved to MRU, LRU 40 survives); miss
-  `[99,10,20,30]` (LRU 40 evicted); swap find=20 insert=99 → `[99,10,30,40]`
-  (20 removed, 99 at MRU, 40 survives — one-out-one-in, the victim swap).
+**Verification already run and passing** (concrete-value sanity checks):
+- `updated_cache` hit / miss / swap all correct (move-to-front, insert-evict,
+  one-out-one-in victim swap).
+- `step_nine` / `step_victim` correct across all hit/miss combinations.
+- **Shared-L2 spine PROVEN**: `Or(l2_next_nine[i] != l2_next_victim[i])` over a
+  symbolic L2 + access is `unsat` — the designs can never disagree on L2.
+- `access_cost` gives 1 / 11 / 111 for the three tiers.
+- `build_model` smoke test: `sat`, trace `[0,0,0,0]`, both costs 114, gap 0.
 
-See `TODO.md` for exactly what to build next and how.
+See `TODO.md` for the one remaining item (first real run + hand-check).

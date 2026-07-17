@@ -11,72 +11,62 @@ verifying each layer before moving on. Do not dump large chunks.
 - [x] **State scaffolding**: `Params`, `fresh_cache`, `init_empty`,
   `constrain_trace`. Verified (sentinels distinct/negative, trace bound enforced).
 
-## NEXT: Transitions (in progress — nothing committed yet)
+- [x] **Transitions**: `step_nine`, `step_victim`. Both take current-state
+  lists, the access, and caller-allocated next-state lists; emit equality
+  constraints tying next-state to `updated_cache(...)`; return the hit flags.
+  - `step_nine` verified on concrete cases: L2-hit reorder / L3 untouched,
+    L2-miss+L3-miss DRAM-fill, L2-miss+L3-hit promote (incl. `w3=2` reorder).
+  - `step_victim` verified: L2-hit → victim unchanged; L2-miss+victim-miss →
+    insert evictee; L2-miss+victim-hit → swap (accessed line out, L2 evictee in),
+    incl. `v=2` cases.
+  - **Shared-L2 spine PROVEN**: with a symbolic L2 and access fed to both step
+    functions, `Or(l2_next_nine[i] != l2_next_victim[i])` is `unsat` — the two
+    designs can never disagree on the L2 next-state. In `build_model` both also
+    write the same `l2_traj[t+1]` vars, so identity holds by construction too.
 
-Two functions. Each takes the current-state lists, the access, and the
-caller-allocated next-state lists; emits equality constraints tying next-state to
-`updated_cache(...)`; and returns the hit flags. Design: caller allocates the
-next-state vars with `fresh_cache`, the step function constrains them.
+## NEXT: first real run
 
-- [ ] **`step_nine(l2_now, l3_now, access, l2_next, l3_next)`**
-  - `l2_hit = is_present(l2_now, access)`; `l3_hit = is_present(l3_now, access)`.
-  - L2 always updates: `l2_next == updated_cache(l2_now, access, access)`.
-  - L3 updates only on an L2 miss (promote on hit / DRAM-fill on miss), else
-    unchanged: `l3_next[i] == If(l2_hit, l3_now[i], updated_cache(l3_now, access, access)[i])`.
-  - Return the constraint list plus `l2_hit`, `l3_hit`.
-  - NOTE: an earlier draft of this exact function was written but the user halted
-    before committing it — re-derive it, don't assume the draft was correct.
+Everything below the primitives is written and unit-verified. The only open item
+is the end-to-end run + hand-check of the witness (see "Search + report").
 
-- [ ] **`step_victim(l2_now, victim_now, access, l2_next, victim_next)`**
-  - `l2_hit = is_present(l2_now, access)`; `victim_hit = is_present(victim_now, access)`.
-  - `evicted_from_l2 = lru_line(l2_now)`.
-  - L2 update is IDENTICAL to `step_nine`'s (shared-L2 spine):
-    `l2_next == updated_cache(l2_now, access, access)`.
-  - Victim cache 3-way update:
-    - L2 hit → victim unchanged (`victim_next == victim_now`).
-    - L2 miss & victim hit → **swap**:
-      `updated_cache(victim_now, line_to_find=access, line_to_insert=evicted_from_l2)`.
-    - L2 miss & victim miss → **insert evictee**:
-      `updated_cache(victim_now, line_to_find=evicted_from_l2, line_to_insert=evicted_from_l2)`.
-    - Encode the 3-way choice with nested `If` on `l2_hit` / `victim_hit`.
-  - Return the constraint list plus `l2_hit`, `victim_hit`.
-  - VERIFY: on a shared L2 fed to both step functions, the L2 trajectory is
-    identical (sanity-check the shared-L2 claim).
+## Cost (DONE, verified)
 
-## THEN: Cost
-
-- [ ] **`access_cost(l2_hit, mid_hit, params)`** → Z3 Int.
+- [x] **`access_cost(l2_hit, mid_hit, params)`** → Z3 Int.
   `l2 + If(Not(l2_hit), l3 + If(Not(mid_hit), ld, 0), 0)`. One function for both
-  designs (`mid_hit` = `l3_hit` for NINE, `victim_hit` for Victim). Verify all
-  three tiers for both mid_hit values.
+  designs (`mid_hit` = `l3_hit` for NINE, `victim_hit` for Victim). Verified all
+  three tiers (1 / 11 / 111) for both mid_hit values; on an L2 hit `mid_hit` is
+  correctly irrelevant.
 
-## THEN: Assembly
+## Assembly (DONE, verified)
 
-- [ ] **`build_model(params)`** — unroll `t = 0..N-1`:
-  - Allocate ONE shared L2 trajectory (`l2[0..N]`), one NINE L3 trajectory, one
-    victim trajectory, and the `access_sequence`.
+- [x] **`build_model(params)`** — unroll `t = 0..N-1`:
+  - Allocates ONE shared L2 trajectory (`l2_traj[0..N]`, same var list fed to
+    both step functions), one NINE L3 trajectory, one victim trajectory, and the
+    `access_sequence`.
   - `init_empty` on all caches at `t=0`; `constrain_trace(access_sequence, K)`.
-  - Each timestep: call `step_nine` and `step_victim` (both reading the SAME
-    `l2[t]`), accumulate `cost_nine` and `cost_victim` via `access_cost`.
-  - Return a bundle: constraint list, `access_sequence`, all trajectories, both
-    cost sums, per-step hit-flag vectors.
-- [ ] **`gap_expression(bundle)`** → `cost_victim - cost_nine`.
-- [ ] Smoke test: satisfiable for *some* trace with no objective yet.
+  - Each timestep: calls `step_nine` and `step_victim` (both reading the SAME
+    `l2_traj[t]` and both writing `l2_traj[t+1]`), accumulates `cost_nine` and
+    `cost_victim` via `access_cost`.
+  - Returns a `Bundle` dataclass: constraint list, `access_sequence`, all
+    trajectories, both cost sums, per-step hit-flag vectors.
+  - `gap` is `cost_victim - cost_nine`, used inline at the `maximize` site — NOT
+    a standalone function (trivial one-liners are inlined per user preference).
+- [x] Smoke test: `sat` for trace `[0,0,0,0]`, both costs 114, gap 0.
 
-## THEN: Search + report
+## Search + report (in progress)
 
-- [ ] **`solve_for_counterexample(bundle, params)`** — `z3.Optimize`; add all
-  constraints; assert negated hypothesis `cost_victim > cost_nine`;
-  `maximize(gap_expression(bundle))`; `check()`.
-- [ ] **`report_result(opt, bundle, params)`**:
-  - SAT: print `access_sequence`, both full trajectories per timestep, `C_NINE`,
+- [x] **`solve_for_counterexample(bundle, params)`** — `z3.Optimize`; adds all
+  constraints; asserts negated hypothesis `cost_victim > cost_nine`;
+  `maximize(cost_victim - cost_nine)`; returns `(opt, opt.check())`.
+- [x] **`report_result(opt, result, bundle, params)`**:
+  - SAT: prints `access_sequence`, both full trajectories per timestep, `C_NINE`,
     `C_victim`, `gap`, and the derived integer
-    `#(NINE-L3 hits among L2-miss steps) - #(victim hits among L2-miss steps)`.
-    Confirm `gap == ld * that_integer`.
-  - UNSAT: print the bounded result with all params (H holds up to this N, K —
+    `#(NINE-L3 hits among L2-miss steps) - #(victim hits among L2-miss steps)`,
+    with the `gap == ld * that_integer` cross-check.
+  - UNSAT: prints the bounded result with all params (H holds up to this N, K —
     NOT a general proof).
-- [ ] First real run on a small config, e.g. `Params(w2=2, w3=1, v=1, N=4, K=3,
-  l2=1, l3=10, ld=100)`.
+- [ ] First real run on the small config `Params(w2=2, w3=1, v=1, N=4, K=3,
+  l2=1, l3=10, ld=100)` — run via `python3 model.py`.
 
 ## THEN: Sweep driver (last)
 
