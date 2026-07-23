@@ -3,8 +3,8 @@
 ## What this project is
 
 We are using Z3 (Python bindings, `from z3 import *`) to determine whether a
-memory hierarchy whose L3-position structure is a **victim cache** can ever cost
-*more* total lookup cycles than a hierarchy with an independent **NINE**
+memory hierarchy whose L3-position structure is a **victim cache** can ever incur
+*more* total DRAM lookups than a hierarchy with an independent **NINE**
 (non-inclusive, non-exclusive) L3, under some load trace.
 
 We follow the **CCAC methodology** (Arun et al., "Toward Formally Verifying
@@ -37,9 +37,9 @@ share the **exact same L2** (same ways `w2`, same strict-LRU policy).
 **Same-size L3 is definitional, not a fairness knob.** Both designs repurpose the
 *same* physical L3 storage, so `v == w3` **always**. Comparing different L3 sizes
 (`w3 != v`) is meaningless — any gap would be a capacity artifact, not the
-victim-vs-NINE structural difference. Likewise `w2` is shared. All latencies are
-equal across designs. Every gap must be attributable to *policy structure*
-alone.
+victim-vs-NINE structural difference. Likewise `w2` is shared. Both designs
+count DRAM lookups identically. Every gap must be attributable to *policy
+structure* alone.
 
 ### Cache representation
 
@@ -59,25 +59,28 @@ collapses algebraically to:
 
 ```
 gap = C_victim - C_NINE
-    = ld * [ #(NINE-L3 hits among L2-miss steps) - #(victim-cache hits among L2-miss steps) ]
+    = #(NINE-L3 hits among L2-miss steps) - #(victim-cache hits among L2-miss steps)
 ```
 
-Report this derived integer hit-count difference alongside raw cycle totals — it
-is the interpretable, hand-checkable quantity.
+Report this derived integer hit-count difference alongside the raw DRAM-lookup
+totals — it is the interpretable, hand-checkable quantity.
 
 ## Cost model
 
-Cumulative — each access pays for every tier probed until it resolves:
+The cost of a design is simply its **count of DRAM lookups** — L2 and L3
+latencies are treated as negligible and no latency constant is modeled. Each
+access that misses both L2 and the mid level costs 1; every hit costs 0.
 
 ```
-L2 hit                    : l2
-L2 miss, mid-level hit     : l2 + l3          (mid = L3 for NINE, victim cache for Victim)
-L2 miss, mid-level miss    : l2 + l3 + ld     (DRAM always resolves)
+L2 hit or mid-level hit     : 0
+L2 miss and mid-level miss  : 1     (one DRAM lookup)
 ```
 
-Latencies are deliberately **equal across designs** (`l2` shared; `l3` charged
-for both L3 and victim-cache lookups) so any gap is attributable to *structure*,
-not to a latency asymmetry.
+This isolates the gap to the *frequency* of mid-level hits conditioned on L2
+miss — the structural difference between NINE L3 (independent) and victim cache
+(exclusive). Because both designs count DRAM lookups identically, any gap is
+attributable to *policy*, not asymmetric hardware costs. `gap = C_victim -
+C_NINE` is therefore already the hit-count difference, with no scale factor.
 
 ## The query
 
@@ -112,7 +115,7 @@ Search:        z3.Optimize, assert the negation (C_victim > C_NINE), maximize(ga
   "pluck out" / "falls off". Say "remove line_to_find if present", "the LRU entry
   is evicted", etc. Comments must read precisely months later.
 - **Blank lines between logical groups** within a dataclass/function (e.g. group
-  the way-counts, the bounds, the latencies in `Params`).
+  the way-counts and the bounds in `Params`).
 - **Small functions, one at a time.** Build incrementally in dependency order and
   verify each layer before moving on. Do NOT dump large chunks of code. The user
   wants to work through functions individually and understand each.
@@ -147,7 +150,7 @@ Search:        z3.Optimize, assert the negation (C_victim > C_NINE), maximize(ga
 The whole model is implemented and unit-verified. Only the end-to-end run +
 hand-check of the witness remains. Layers, in dependency order:
 
-- **State scaffolding**: `Params` dataclass (`w2, w3, v, N, K, l2, l3, ld`);
+- **State scaffolding**: `Params` dataclass (`w2, w3, N, K`);
   `fresh_cache(name, num_ways, timestep)` → named Z3 Ints (`L2_t3_slot0`, ...);
   `init_empty(cache_state)` → distinct negative sentinels `-1, -2, ...`;
   `constrain_trace(access_sequence, K)` → each access in `[0, K)`.
@@ -175,7 +178,7 @@ hand-check of the witness remains. Layers, in dependency order:
 - `step_nine` / `step_victim` correct across all hit/miss combinations.
 - **Shared-L2 spine PROVEN**: `Or(l2_next_nine[i] != l2_next_victim[i])` over a
   symbolic L2 + access is `unsat` — the designs can never disagree on L2.
-- `access_cost` gives 1 / 11 / 111 for the three tiers.
-- `build_model` smoke test: `sat`, trace `[0,0,0,0]`, both costs 114, gap 0.
+- `access_cost` counts DRAM lookups only (0 on any hit, 1 on both-miss).
+- `build_model` smoke test: `sat`, trace `[0,0,0,0]`, both costs 0, gap 0.
 
 See `TODO.md` for the one remaining item (first real run + hand-check).
