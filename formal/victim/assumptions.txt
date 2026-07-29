@@ -1,4 +1,5 @@
 Victim vs NINE Assumptions
+Note: this is valid for original model. Currently under modification to allow more non-determinism
 
 Hierarchy consists of L2 (w2 ways) and L3 (w3 ways), both fully associative
 Victim Cache Rules:
@@ -17,4 +18,4 @@ Both caches follow LRU replacement
 
 No prefetcher in the loop
 Structure: Z3 comes up with a sequence of N memory accesses, where distinct lines are given labels from 1-K
-
+We ask z3 to find a case where the total number of DRAM accesses in the victim cache config is greater than in the NINE config
