@@ -205,11 +205,6 @@ hand-check of the witness remains. Layers, in dependency order:
 - **Bounded result solid**: H (C_victim <= C_NINE) is UNSAT at every swept
   (N, w2, w3). Mechanism: exclusivity gives the victim design the larger
   distinct non-L2 footprint (NINE's L3 wastes slots on L2 duplicates).
-- **The alphabet bound `K` is gone.** The restricted-growth labeling already
-  forces `a_t <= t`, so every access lies in `[0, N)` automatically; the old
-  `ULT(access, K)` was redundant when `K >= N` and a workload assumption when
-  `K < N` (the old default was `K=6` at `N=10`). Sentinels are now `N + i` and
-  width comes from `N + max_ways - 1`. Do not reintroduce `K`.
 - **Do NOT propose differential L3 sizing** (`w3_nine != w3`): the same-size
   comparison is definitional (see "Same-size L3 is definitional"). `model.py`
   models `w3` only; do not reintroduce a per-design sizing knob.

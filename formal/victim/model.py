@@ -220,7 +220,7 @@ def report_result(model, result, bundle, params):
     print(f"check gap == hit_diff           = {gap == hit_diff}")
 
 if __name__ == "__main__":
-    params = Params(w2=2, w3=3, N=10)
+    params = Params(w2=3, w3=6, N=12)
     bundle = build_model(params)
     model, result = solve_for_counterexample(bundle, params)
     report_result(model, result, bundle, params)
