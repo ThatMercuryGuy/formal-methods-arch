@@ -44,8 +44,8 @@ structure* alone.
 ### Cache representation
 
 A cache is an ordered list of line-labels (Z3 **bit-vectors** of width
-`ceil(log2(K + max_ways))`): **position 0 = MRU, last position = LRU**. A real
-line is a label in `[0, K)`; empty slot i holds the sentinel `K + i` (a value no
+`ceil(log2(N + max_ways))`): **position 0 = MRU, last position = LRU**. A real
+line is a label in `[0, N)`; empty slot i holds the sentinel `N + i` (a value no
 real access can match; all comparisons unsigned — `ULT`/`ULE`). Bit-vectors keep
 the whole model in QF_BV, which bit-blasts to SAT instead of invoking the
 integer-arithmetic engine — this is the main state-space-explosion mitigation.
@@ -93,14 +93,14 @@ C_NINE` is therefore already the hit-count difference, with no scale factor.
 ## The query
 
 ```
-Hypothesis H:  C_victim <= C_NINE   for every trace of length N over alphabet K
+Hypothesis H:  C_victim <= C_NINE   for every trace of length N
 Search:        assert the negation (C_victim > C_NINE); on SAT, maximize the gap
                by binary search over "gap >= g" on one incremental Solver
                (push/pop). NOT z3.Optimize — MaxSMT disables preprocessing and
                is far slower than plain SAT probes on this encoding.
 ```
 
-- **UNSAT** → H holds up to this bounded `(N, K)` — a bounded result, NOT a
+- **UNSAT** → H holds up to this bounded `(N, w2, w3)` — a bounded result, NOT a
   general proof. Report the bound explicitly.
 - **SAT** → report the full trace, both full state trajectories, `C_NINE`,
   `C_victim`, `gap`, and the derived integer hit-count difference so the result
@@ -129,8 +129,8 @@ Search:        assert the negation (C_victim > C_NINE); on SAT, maximize the gap
   separate docs, not in `model.py`.
 - **Comments minimal — no huge comment blocks.** One or two lines maximum per
   comment; never multi-paragraph. Do not explain rationale, encoding choices, or
-  why an approach is correct in code comments — that goes in CLAUDE.md or
-  `analysis.txt`. If a comment needs a third line, it belongs in a doc.
+  why an approach is correct in code comments — that goes in CLAUDE.md. If a
+  comment needs a third line, it belongs in a doc.
 - **Precise, non-casual comment language.** The user rejected phrasing like
   "pluck out" / "falls off". Say "remove line_to_find if present", "the LRU entry
   is evicted", etc. Comments must read precisely months later.
@@ -140,7 +140,7 @@ Search:        assert the negation (C_victim > C_NINE); on SAT, maximize the gap
   verify each layer before moving on. Do NOT dump large chunks of code. The user
   wants to work through functions individually and understand each.
 - **No assumptions about the adversarial workload — explicit or implicit.** The
-  trace is constrained ONLY by `access in [0, K)`. Never bias, seed, shape,
+  trace is constrained ONLY by the canonical labeling. Never bias, seed, shape,
   order, or hint the trace; never special-case a value; never add a constraint
   that narrows the search on a hunch. Only the cold-start initial state and the
   LRU transition rules are encoded. If a constraint is not a
@@ -170,11 +170,11 @@ Search:        assert the negation (C_victim > C_NINE); on SAT, maximize the gap
 The whole model is implemented and unit-verified. Only the end-to-end run +
 hand-check of the witness remains. Layers, in dependency order:
 
-- **State scaffolding**: `Params` dataclass (`w2, w3, N, K`; `w3` is the single
-  shared L3 size); `init_empty(num_ways, K, width)` → concrete sentinel
-  constants `K, K+1, ...`; `constrain_trace(access_sequence, K)` → each access
-  in `[0, K)` plus the restricted-growth canonical labeling (exact S_K symmetry
-  reduction).
+- **State scaffolding**: `Params` dataclass (`w2, w3, N`; `w3` is the single
+  shared L3 size); `init_empty(num_ways, N, width)` → concrete sentinel
+  constants `N, N+1, ...`; `constrain_trace(access_sequence)` → the
+  restricted-growth canonical labeling (exact S_N symmetry reduction), which
+  already implies every access lies in `[0, N)`.
 - **Primitives**: `is_present`, `lru_line`, `updated_cache` — the single
   strict-LRU update (remove `line_to_find` if present, place `line_to_insert` at
   MRU, else evict LRU), reused for every structure.
@@ -200,14 +200,16 @@ hand-check of the witness remains. Layers, in dependency order:
 - `access_cost` counts DRAM lookups only (0 on any hit, 1 on both-miss).
 - `build_model` smoke test: `sat`, trace `[0,0,0,0]`, both costs 0, gap 0.
 
-## Where the research stands (see `analysis.txt` for full detail)
+## Where the research stands
 
 - **Bounded result solid**: H (C_victim <= C_NINE) is UNSAT at every swept
-  (N, K, w2, w3). Mechanism: exclusivity gives the victim design the larger
+  (N, w2, w3). Mechanism: exclusivity gives the victim design the larger
   distinct non-L2 footprint (NINE's L3 wastes slots on L2 duplicates).
-- **Set invariant `(L3 \ L2) subset victim`**: TRUE on all reachable states in
-  the bound, but NOT inductive (the inductive step is SAT from unreachable
-  pre-states). Cause: NINE orders recency by access, victim by eviction.
+- **The alphabet bound `K` is gone.** The restricted-growth labeling already
+  forces `a_t <= t`, so every access lies in `[0, N)` automatically; the old
+  `ULT(access, K)` was redundant when `K >= N` and a workload assumption when
+  `K < N` (the old default was `K=6` at `N=10`). Sentinels are now `N + i` and
+  width comes from `N + max_ways - 1`. Do not reintroduce `K`.
 - **Do NOT propose differential L3 sizing** (`w3_nine != w3`): the same-size
   comparison is definitional (see "Same-size L3 is definitional"). `model.py`
   models `w3` only; do not reintroduce a per-design sizing knob.
@@ -216,19 +218,76 @@ hand-check of the witness remains. Layers, in dependency order:
   policy); gap == 0 by construction. Exclusivity forbids demand-path insertion
   definitionally, so it cannot be isolated as an independent knob.
 
-## Next steps (ranked — pursue in this order)
+## Current direction: symbolic competitor rules
 
-1. **Ghost-cache decomposition (first)**: add a reference LRU of size
-   `w2 + w3` driven by the same trace, then prove two separate
-   invariants: (a) `L2 ∪ victim == ghost contents` (classical exclusive-
-   hierarchy stack property, likely inductive as-is) and (b)
-   `NINE-L3 subset ghost`. Together they imply stepwise dominance; each half
-   relates one design to a canonical object instead of coupling the two
-   recency orders directly.
-2. **Automated invariant synthesis**: encode the transition system as CHCs for
-   Z3's Spacer (IC3-style), or try cheap k-induction.
-3. **Small-model lemma for K**: show any counterexample relabels into
-   `w2 + 2*w3 + 1` distinct lines, making each bounded UNSAT hold for all K.
-4. **Off-ramp if induction stalls (timeboxed)**: quantify the victim's win
-   (maximize `C_NINE - C_victim`), vary the victim insertion position, extend
-   to non-LRU policies. Publishable characterization even without the theorem.
+The question is no longer "victim vs. one hand-written NINE" but **can any L3
+admission/placement rule beat exclusive on the same hardware budget?** The
+competitor's rules become symbolic free variables, so Z3 synthesizes the
+opposing design. The negation is `∃rules ∃trace: C_competitor < C_victim` — one
+existential, one QF_BV call, no quantifier alternation. The goal is to give the
+adversary **maximum freedom**; every surviving restriction must be justified as
+physical or definitional, not kept for convenience.
+
+Six event contexts (the cross of `{L2 hit, L2 miss-hit, L2 miss-miss}` with the
+line's L3 residency, plus the L2-eviction event split the same way), each with a
+symbolic action selector over `NOP | MOVE_TO(rank) | REMOVE` and a free
+placement rank. `MOVE_TO` reads as TOUCH_TO where the line is resident and
+INSERT_AT where it is not — one primitive, so the residency split is what keeps
+TOUCH_TO from inserting and REMOVE from evicting.
+
+Victim's own assignment (`E3=REMOVE, E4=NOP, E5=MOVE_TO(0), E6=NOP`) lives
+inside this space and yields gap 0, so the space contains the incumbent by
+construction and any SAT is a strict improvement over it.
+
+**Restrictions still binding the adversary** (what an UNSAT would be conditional
+on):
+
+1. **Rule table constant in `N`** — keep; not negotiable. A per-timestep table
+   sees the future and can implement Belady, which beats every online policy and
+   makes SAT vacuous. This is the line between maximum freedom and meaningless.
+2. **L3 replacement is LRU** — but free ranks already span the DIP/RRIP
+   insertion-policy axis (insert-at-`w3-1` is distant insertion). The residual
+   gap is policies whose eviction is not a function of stack position: RRIP
+   proper, SHiP/Hawkeye/Mockingjay, random. Those need per-line metadata.
+3. **L2 pinned** (allocate-on-miss, install at MRU) — for attribution: a witness
+   that wins by L2 bypass says nothing about L3 structure, since the victim
+   design could adopt it too. Relaxing it also costs the shared-L2 spine and the
+   gap decomposition.
+4. **Vocabulary**: only the accessed line or L2's evictee may enter L3 —
+   physical (no prefetcher, no clairvoyance).
+5. **No per-line metadata** — excludes bypass and RRIP-class eviction. Bypass is
+   the most credible dogma-breaker (the victim cache definitionally cannot
+   bypass — every L2 eviction is admitted), so this is the next relaxation if
+   the current search returns UNSAT, not a conclusion.
+
+**Settled for this direction:**
+
+- Chaining order on L2-miss steps (both the demand path and the eviction path
+  can fire) is a **free bit in the rule table** — adversary freedom, constant in
+  `N`.
+- Every selector ranges over all three actions; the primitive's absent-line
+  semantics collapse the meaningless ones. Widening only strengthens an UNSAT.
+- Ranks constrained `ULT(rank, w3)` for well-formedness (clamping adds only
+  aliases that make a witness harder to read).
+- **Sentinel guard**: during cold start `lru_line(l2_now)` returns a sentinel,
+  not a real line. Harmless in today's `step_victim`, but not once the eviction
+  path coexists with demand fill — inserting a sentinel would evict a real line.
+  Guard E5/E6 with `ULT(evictee, N)`.
+- The second action's event context is **not** statically known: an
+  `INSERT_AT` on the demand path can evict the L2 evictee, so E5-vs-E6 must be
+  re-evaluated after the first action via a symbolic selector pick.
+- **Self-checks before any real probe**: pin selectors to victim's assignment and
+  assert `gap != 0` → must be UNSAT; then pin to NINE's assignment
+  (`E3=MOVE_TO(0), E4=MOVE_TO(0), E5=NOP`) and match `model.py`'s baseline gap at
+  the same `(N, w2, w3)`. The second also exercises the demand-fill path.
+- Sizing: start at `w2=2, w3=2, N=6` and sweep up. The L3 next-state term now
+  carries selectors, ranks, and two chained updates.
+
+**Rejected — do not re-derive:** per-step demonic eviction (clairvoyant);
+Ackermannized policy function over cache contents (coupling only fires on
+identical states); rank-domain policy function (presupposes recency, excludes
+random/RRIP/Hawkeye/Mockingjay); `min_P C_victim <= min_P C_competitor`
+(comparing A-under-X to B-under-Y is weaker); the four-bit NINE lattice
+(superseded by the six-event vocabulary — its gaps were three-valued
+retain-on-promote, the eviction residency split, per-path ranks, and
+REMOVE-on-L2-hit).

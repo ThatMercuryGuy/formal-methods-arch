@@ -6,23 +6,21 @@ class Params:
     w2: int   # L2 ways (shared by both designs)
     w3: int   # L3 ways (the SAME physical L3, run as NINE or as victim cache)
 
-    N: int    # trace length (bounded horizon)
-    K: int    # number of distinct line labels available to the trace
+    N: int    # trace length, and the number of line labels available to it
 
 
-# Cold start: slot i holds the sentinel K + i, which no real line label
-# (in [0, K)) can equal.
-def init_empty(num_ways, K, width):
-    return [BitVecVal(K + i, width) for i in range(num_ways)]
+# Cold start: slot i holds the sentinel N + i, which no real line label
+# (in [0, N)) can equal.
+def init_empty(num_ways, N, width):
+    return [BitVecVal(N + i, width) for i in range(num_ways)]
 
 
-# Each access is a line label in [0, K), plus the canonical (restricted-growth)
-# labeling — an exact S_K symmetry reduction.
-def constrain_trace(access_sequence, K):
-    constraints = [ULT(access, K) for access in access_sequence]
+# The canonical (restricted-growth) labeling — an exact S_N symmetry reduction.
+# It also implies every access lies in [0, N), so no separate bound is needed.
+def constrain_trace(access_sequence):
+    constraints = [access_sequence[0] == 0]
 
     frontier = access_sequence[0]
-    constraints.append(access_sequence[0] == 0)
     for access in access_sequence[1:]:
         constraints.append(ULE(access, frontier + 1))
         frontier = If(access == frontier + 1, frontier + 1, frontier)
@@ -103,15 +101,15 @@ class Bundle:
 
 def build_model(params):
     max_ways = max(params.w2, params.w3)
-    width = (params.K + max_ways - 1).bit_length()
+    width = (params.N + max_ways - 1).bit_length()
 
     access_sequence = [BitVec(f"access_t{t}", width) for t in range(params.N)]
 
-    l2_traj = [init_empty(params.w2, params.K, width)]
-    l3_traj = [init_empty(params.w3, params.K, width)]
-    victim_traj = [init_empty(params.w3, params.K, width)]
+    l2_traj = [init_empty(params.w2, params.N, width)]
+    l3_traj = [init_empty(params.w3, params.N, width)]
+    victim_traj = [init_empty(params.w3, params.N, width)]
 
-    constraints = constrain_trace(access_sequence, params.K)
+    constraints = constrain_trace(access_sequence)
 
     l2_hits, l3_hits, victim_hits = [], [], []
 
@@ -181,14 +179,14 @@ def report_result(model, result, bundle, params):
     if result == unsat:
         print("UNSAT: no trace makes Victim cost more than NINE.")
         print(f"Hypothesis C_victim <= C_NINE holds for ALL traces of length "
-              f"N={params.N} over K={params.K} labels.")
+              f"N={params.N} over any number of distinct labels.")
         return
 
     trace = [model.eval(a).as_long() for a in bundle.access_sequence]
     print(f"SAT: counterexample trace = {trace}")
 
     print(f"\nper-timestep trajectories (position 0 = MRU; "
-          f"values >= K={params.K} are empty-slot sentinels):")
+          f"values >= N={params.N} are empty-slot sentinels):")
     print(f"  t0 (init): L2={_row(bundle.l2_traj[0], model)} "
           f"L3={_row(bundle.l3_traj[0], model)} V={_row(bundle.victim_traj[0], model)}")
     for t in range(params.N):
@@ -222,9 +220,7 @@ def report_result(model, result, bundle, params):
     print(f"check gap == hit_diff           = {gap == hit_diff}")
 
 if __name__ == "__main__":
-    # K > w2 + w3 so neither design can cache the whole alphabet: both face
-    # genuine capacity pressure, and the L3 storage is identical in both.
-    params = Params(w2=2, w3=3, N=10, K=6)
+    params = Params(w2=2, w3=3, N=10)
     bundle = build_model(params)
     model, result = solve_for_counterexample(bundle, params)
     report_result(model, result, bundle, params)

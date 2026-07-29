@@ -17,5 +17,4 @@ Both caches follow LRU replacement
 3. L2 miss + L3 miss -> Insert line in L2 MRU, L3 MRU, both evictions dropped
 
 No prefetcher in the loop
-Structure: Z3 comes up with a sequence of N memory accesses, where distinct lines are given labels from 1-K
-We ask z3 to find a case where the total number of DRAM accesses in the victim cache config is greater than in the NINE config
+Structure: Z3 comes up with a sequence of N memory accesses. Implicitly, there are at most N distinct accesses.

@@ -5,7 +5,7 @@ from model import Params, build_model
 # Track each logical constraint GROUP under one named boolean so an UNSAT core
 # names which groups jointly force the contradiction. The term-DAG encoding
 # (model.py) bakes the whole transition system into the dram sums, so the only
-# trackable groups are the two trace-constraint kinds and the negated hypothesis.
+# trackable groups are the RGS symmetry reduction and the negated hypothesis.
 def build_tracked(params):
     bundle = build_model(params)
 
@@ -16,10 +16,6 @@ def build_tracked(params):
         s.assert_and_track(And(cons) if len(cons) > 1 else cons[0], label)
 
     access_sequence = bundle.access_sequence
-
-    # Split the two constraint kinds constrain_trace emits so the core can tell
-    # them apart: the physical [0,K) bound vs. the RGS symmetry reduction.
-    track("trace_bound", [ULT(a, params.K) for a in access_sequence])
 
     frontier = access_sequence[0]
     rgs = [access_sequence[0] == 0]
@@ -34,7 +30,7 @@ def build_tracked(params):
 
 
 if __name__ == "__main__":
-    params = Params(w2=2, w3=4, N=7, K=7)
+    params = Params(w2=2, w3=4, N=7)
     print(f"params: {params}")
 
     s = build_tracked(params)
@@ -51,6 +47,5 @@ if __name__ == "__main__":
         # jointly-unsat subset, not a minimal one, so a proof-participant like
         # RGS can appear even though it removes no counterexample. The real test
         # is that UNSAT survives with RGS dropped (verified separately).
-        print(f"\ntrace_bound in core?        {'trace_bound' in core}")
-        print(f"RGS_symmetry in core?       {'RGS_symmetry' in core}")
+        print(f"\nRGS_symmetry in core?       {'RGS_symmetry' in core}")
         print(f"negated_hypothesis in core? {'negated_hypothesis' in core}")
