@@ -9,9 +9,6 @@ class Params:
     N: int    # trace length (bounded horizon)
     K: int    # number of distinct line labels available to the trace
 
-    # Diagnostic override for NINE's L3 ways; None means w3_nine == w3.
-    w3_nine: int = None
-
 
 # Cold start: slot i holds the sentinel K + i, which no real line label
 # (in [0, K)) can equal.
@@ -105,16 +102,13 @@ class Bundle:
 
 
 def build_model(params):
-    max_ways = max(params.w2, params.w3,
-                   params.w3 if params.w3_nine is None else params.w3_nine)
+    max_ways = max(params.w2, params.w3)
     width = (params.K + max_ways - 1).bit_length()
 
     access_sequence = [BitVec(f"access_t{t}", width) for t in range(params.N)]
 
-    w3_nine = params.w3 if params.w3_nine is None else params.w3_nine
-
     l2_traj = [init_empty(params.w2, params.K, width)]
-    l3_traj = [init_empty(w3_nine, params.K, width)]
+    l3_traj = [init_empty(params.w3, params.K, width)]
     victim_traj = [init_empty(params.w3, params.K, width)]
 
     constraints = constrain_trace(access_sequence, params.K)
@@ -228,10 +222,9 @@ def report_result(model, result, bundle, params):
     print(f"check gap == hit_diff           = {gap == hit_diff}")
 
 if __name__ == "__main__":
-    # Coverage-parity experiment: NINE's L3 gets w2 + w3 ways, matching the
-    # victim design's exclusive union. K > w2 + w3 keeps capacity pressure on
-    # both. Any remaining gap is attributable to recency dynamics alone.
-    params = Params(w2=3, w3=6, N=12, K=10, w3_nine=9)
+    # K > w2 + w3 so neither design can cache the whole alphabet: both face
+    # genuine capacity pressure, and the L3 storage is identical in both.
+    params = Params(w2=2, w3=3, N=10, K=6)
     bundle = build_model(params)
     model, result = solve_for_counterexample(bundle, params)
     report_result(model, result, bundle, params)

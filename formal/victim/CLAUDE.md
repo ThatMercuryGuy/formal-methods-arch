@@ -43,9 +43,17 @@ structure* alone.
 
 ### Cache representation
 
-A cache is an ordered list of line-labels (Z3 Ints): **position 0 = MRU, last
-position = LRU**. A real line is a label in `[0, K)`; an empty slot is a distinct
-**negative** sentinel (so it can never match a real access).
+A cache is an ordered list of line-labels (Z3 **bit-vectors** of width
+`ceil(log2(K + max_ways))`): **position 0 = MRU, last position = LRU**. A real
+line is a label in `[0, K)`; empty slot i holds the sentinel `K + i` (a value no
+real access can match; all comparisons unsigned — `ULT`/`ULE`). Bit-vectors keep
+the whole model in QF_BV, which bit-blasts to SAT instead of invoking the
+integer-arithmetic engine — this is the main state-space-explosion mitigation.
+
+The trajectories are **If-term DAGs, not fresh variables**: each `step_*` returns
+next-state terms over the current state, so the N access symbols are the
+formula's only free variables (canonical bounded-model-checking form). Cost sums
+stay in Int arithmetic; only cache contents and accesses are bit-vectors.
 
 ## Key structural fact (exploited, not asserted)
 
@@ -86,7 +94,10 @@ C_NINE` is therefore already the hit-count difference, with no scale factor.
 
 ```
 Hypothesis H:  C_victim <= C_NINE   for every trace of length N over alphabet K
-Search:        z3.Optimize, assert the negation (C_victim > C_NINE), maximize(gap)
+Search:        assert the negation (C_victim > C_NINE); on SAT, maximize the gap
+               by binary search over "gap >= g" on one incremental Solver
+               (push/pop). NOT z3.Optimize — MaxSMT disables preprocessing and
+               is far slower than plain SAT probes on this encoding.
 ```
 
 - **UNSAT** → H holds up to this bounded `(N, K)` — a bounded result, NOT a
@@ -101,7 +112,12 @@ Search:        z3.Optimize, assert the negation (C_victim > C_NINE), maximize(ga
   construction). `step_victim` takes `l2_now` / `evicted_from_l2` as given inputs.
 - **Z3-only**: NO plain-Python reference simulator. Hand-checkability comes from
   printing the trajectory and the derived hit-count difference.
-- **Search**: `z3.Optimize` with `maximize(gap)` subject to `gap > 0`.
+- **Search**: feasibility check on `gap >= 1` first; on SAT, binary-search the
+  maximal gap with incremental `push`/`pop` (see "The query"). `gap <= N` bounds
+  the search.
+- **QF_BV encoding + term-DAG trajectories** (see "Cache representation"):
+  bit-vectors, not Ints; no per-timestep state variables. Do not reintroduce
+  either — the Int/fresh-variable encoding took ~30 min where this takes ~2.5.
 
 ## Coding principles (STRICT — the user cares about these)
 
@@ -111,6 +127,10 @@ Search:        z3.Optimize, assert the negation (C_victim > C_NINE), maximize(ga
   docstrings, no verbose per-function prose. At most a **precise** one-to-few
   line comment above a function explaining behavior. Extended prose belongs in
   separate docs, not in `model.py`.
+- **Comments minimal — no huge comment blocks.** One or two lines maximum per
+  comment; never multi-paragraph. Do not explain rationale, encoding choices, or
+  why an approach is correct in code comments — that goes in CLAUDE.md or
+  `analysis.txt`. If a comment needs a third line, it belongs in a doc.
 - **Precise, non-casual comment language.** The user rejected phrasing like
   "pluck out" / "falls off". Say "remove line_to_find if present", "the LRU entry
   is evicted", etc. Comments must read precisely months later.
@@ -128,9 +148,9 @@ Search:        z3.Optimize, assert the negation (C_victim > C_NINE), maximize(ga
 
 ## Vocabulary (use these exact names)
 
-- `cache_state` — ordered list of line-label Z3 Ints for one structure at one
-  timestep (position 0 = MRU).
-- `line_label` — one line identifier (Z3 Int).
+- `cache_state` — ordered list of line-label bit-vector terms for one structure
+  at one timestep (position 0 = MRU).
+- `line_label` — one line identifier (Z3 bit-vector).
 - `access` — the line requested this timestep (`a_t`); Z3's only free variable.
 - `evicted_from_l2` — the line L2 pushes out to admit a new line (`e_t`);
   computed as `lru_line(l2_now)`. Derived, never freely chosen.
@@ -150,27 +170,26 @@ Search:        z3.Optimize, assert the negation (C_victim > C_NINE), maximize(ga
 The whole model is implemented and unit-verified. Only the end-to-end run +
 hand-check of the witness remains. Layers, in dependency order:
 
-- **State scaffolding**: `Params` dataclass (`w2, w3, N, K`);
-  `fresh_cache(name, num_ways, timestep)` → named Z3 Ints (`L2_t3_slot0`, ...);
-  `init_empty(cache_state)` → distinct negative sentinels `-1, -2, ...`;
-  `constrain_trace(access_sequence, K)` → each access in `[0, K)`.
+- **State scaffolding**: `Params` dataclass (`w2, w3, N, K`; `w3` is the single
+  shared L3 size); `init_empty(num_ways, K, width)` → concrete sentinel
+  constants `K, K+1, ...`; `constrain_trace(access_sequence, K)` → each access
+  in `[0, K)` plus the restricted-growth canonical labeling (exact S_K symmetry
+  reduction).
 - **Primitives**: `is_present`, `lru_line`, `updated_cache` — the single
   strict-LRU update (remove `line_to_find` if present, place `line_to_insert` at
   MRU, else evict LRU), reused for every structure.
-- **Transitions**: `step_nine(l2_now, l3_now, access, l2_next, l3_next)` and
-  `step_victim(l2_now, victim_now, access, l2_next, victim_next)`. Each returns
-  `(constraints, l2_hit, mid_hit)`.
-- **Cost**: `access_cost(l2_hit, mid_hit, params)` — one function for both
-  designs.
+- **Transitions**: `step_l2(l2_now, access)`, `step_nine(l3_now, access,
+  l2_hit)`, `step_victim(l2_now, victim_now, access, l2_hit)`. Each returns
+  `(next_state_terms, hit_flag)` — terms, not constraints.
 - **Assembly**: `build_model(params)` unrolls both designs over one shared
-  symbolic trace, returning a `Bundle` dataclass (constraints, access_sequence,
-  all trajectories, both cost sums, per-step hit-flag vectors). The gap
-  `cost_victim - cost_nine` is used inline at the `maximize` site (trivial
-  one-liners are inlined, not wrapped).
-- **Search + report**: `solve_for_counterexample(bundle, params)` (Optimize,
-  negated hypothesis, maximize gap) and `report_result(opt, result, bundle,
-  params)` (full witness on SAT with the hand-checkable hit-count difference;
-  bounded-result note on UNSAT).
+  symbolic trace, returning a `Bundle` dataclass (trace constraints,
+  access_sequence, all trajectories, both DRAM-lookup sums, per-step hit-flag
+  vectors). Cost is inlined at the accumulation site: `+= If(Not(Or(l2_hit,
+  mid_hit)), 1, 0)`.
+- **Search + report**: `solve_for_counterexample(bundle, params)` (feasibility
+  check, then binary-search maximization; returns `(model_or_None, result)`) and
+  `report_result(model, result, bundle, params)` (full witness on SAT with the
+  hand-checkable hit-count difference; bounded-result note on UNSAT).
 
 **Verification already run and passing** (concrete-value sanity checks):
 - `updated_cache` hit / miss / swap all correct (move-to-front, insert-evict,
@@ -181,4 +200,35 @@ hand-check of the witness remains. Layers, in dependency order:
 - `access_cost` counts DRAM lookups only (0 on any hit, 1 on both-miss).
 - `build_model` smoke test: `sat`, trace `[0,0,0,0]`, both costs 0, gap 0.
 
-See `TODO.md` for the one remaining item (first real run + hand-check).
+## Where the research stands (see `analysis.txt` for full detail)
+
+- **Bounded result solid**: H (C_victim <= C_NINE) is UNSAT at every swept
+  (N, K, w2, w3). Mechanism: exclusivity gives the victim design the larger
+  distinct non-L2 footprint (NINE's L3 wastes slots on L2 duplicates).
+- **Set invariant `(L3 \ L2) subset victim`**: TRUE on all reachable states in
+  the bound, but NOT inductive (the inductive step is SAT from unreachable
+  pre-states). Cause: NINE orders recency by access, victim by eviction.
+- **Do NOT propose differential L3 sizing** (`w3_nine != w3`): the same-size
+  comparison is definitional (see "Same-size L3 is definitional"). `model.py`
+  models `w3` only; do not reintroduce a per-design sizing knob.
+- **Do NOT propose "pure exclusive L3 vs. victim L3, same size"**: at whole-L3
+  scale these are the identical state machine (`step_victim` IS the exclusive
+  policy); gap == 0 by construction. Exclusivity forbids demand-path insertion
+  definitionally, so it cannot be isolated as an independent knob.
+
+## Next steps (ranked — pursue in this order)
+
+1. **Ghost-cache decomposition (first)**: add a reference LRU of size
+   `w2 + w3` driven by the same trace, then prove two separate
+   invariants: (a) `L2 ∪ victim == ghost contents` (classical exclusive-
+   hierarchy stack property, likely inductive as-is) and (b)
+   `NINE-L3 subset ghost`. Together they imply stepwise dominance; each half
+   relates one design to a canonical object instead of coupling the two
+   recency orders directly.
+2. **Automated invariant synthesis**: encode the transition system as CHCs for
+   Z3's Spacer (IC3-style), or try cheap k-induction.
+3. **Small-model lemma for K**: show any counterexample relabels into
+   `w2 + 2*w3 + 1` distinct lines, making each bounded UNSAT hold for all K.
+4. **Off-ramp if induction stalls (timeboxed)**: quantify the victim's win
+   (maximize `C_NINE - C_victim`), vary the victim insertion position, extend
+   to non-LRU policies. Publishable characterization even without the theorem.

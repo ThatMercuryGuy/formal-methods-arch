@@ -1,0 +1,20 @@
+Victim vs NINE Assumptions
+
+Hierarchy consists of L2 (w2 ways) and L3 (w3 ways), both fully associative
+Victim Cache Rules:
+Both caches follow LRU replacement
+
+1. L2 hit: Line pushed to MRU position
+2. L2 miss: L3 lookup -> If L3 hit, swap with L2 LRU, both lines inserted in respective MRU
+3. L2 miss + L3 miss -> Insert line in L2 MRU, L2 evicted line inserted in L3 MRU
+
+NINE Cache Rules:
+Both caches follow LRU replacement
+
+1. L2 hit: Line pushed to MRU position
+2. L2 miss: L3 lookup -> If L3 hit, promote to L2 MRU, retain in L3 at MRU, L2 eviction dropped
+3. L2 miss + L3 miss -> Insert line in L2 MRU, L3 MRU, both evictions dropped
+
+No prefetcher in the loop
+Structure: Z3 comes up with a sequence of N memory accesses, where distinct lines are given labels from 1-K
+
